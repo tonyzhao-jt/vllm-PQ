@@ -16,7 +16,7 @@ Requirements
 Install released versions
 =========================
 
-You can install vLLM using pip:
+You can install vLLM, using pip:
 
 .. code-block:: console
 
@@ -24,8 +24,8 @@ You can install vLLM using pip:
     $ conda create -n myenv python=3.10 -y
     $ conda activate myenv
 
-    $ # Install vLLM with CUDA 12.1.
-    $ pip install vllm
+   $ # Install vLLM with CUDA 12.1.
+   $ pip install vllm
 
 .. note::
 
@@ -36,16 +36,16 @@ You can install vLLM using pip:
     As of now, vLLM's binaries are compiled with CUDA 12.1 and public PyTorch release versions by default.
     We also provide vLLM binaries compiled with CUDA 11.8 and public PyTorch release versions:
 
-    .. code-block:: console
+   .. code-block:: console
 
         $ # Install vLLM with CUDA 11.8.
         $ export VLLM_VERSION=0.6.1.post1
         $ export PYTHON_VERSION=310
         $ pip install https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}+cu118-cp${PYTHON_VERSION}-cp${PYTHON_VERSION}-manylinux1_x86_64.whl --extra-index-url https://download.pytorch.org/whl/cu118
 
-    In order to be performant, vLLM has to compile many cuda kernels. The compilation unfortunately introduces binary incompatibility with other CUDA versions and PyTorch versions, even for the same PyTorch version with different building configurations.
+   In order to be performant, vLLM has to compile many CUDA kernels. The compilation, unfortunately, introduces binary incompatibility with other CUDA versions and PyTorch versions, even for the same PyTorch version with different building configurations.
 
-    Therefore, it is recommended to install vLLM with a **fresh new** conda environment. If either you have a different CUDA version or you want to use an existing PyTorch installation, you need to build vLLM from source. See below for instructions.
+   Therefore, it is recommended to install vLLM with a **fresh new** conda environment. If either you have a different CUDA version or you want to use an existing PyTorch installation, you need to :ref:`build vLLM from source <build_from_source>`.
 
 
 .. _install-the-latest-code:

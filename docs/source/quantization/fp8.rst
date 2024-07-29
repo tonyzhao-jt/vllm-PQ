@@ -3,12 +3,12 @@
 FP8 W8A8
 ==================
 
-vLLM supports FP8 (8-bit floating point) weight and activation quantization using hardware acceleration on GPUs such as Nvidia H100 and AMD MI300x. 
-Currently, only Hopper and Ada Lovelace GPUs are officially supported for W8A8. 
+vLLM supports FP8 (8-bit floating point) weight and activation quantization using hardware acceleration on GPUs such as Nvidia H100 and AMD MI300x.
+Currently, only Hopper and Ada Lovelace GPUs are officially supported for W8A8.
 Ampere GPUs are supported for W8A16 (weight-only FP8) utilizing Marlin kernels.
-Quantization of models with FP8 allows for a 2x reduction in model memory requirements and up to a 1.6x improvement in throughput with minimal impact on accuracy.
+Quantization of models with FP8 allows a 2x reduction in model memory requirements and up to a 1.6x improvement in throughput with minimal impact on accuracy.
 
-Please visit the HF collection of `quantized FP8 checkpoints of popular LLMs ready to use with vLLM <https://huggingface.co/collections/neuralmagic/fp8-llms-for-vllm-666742ed2b78b7ac8df13127>`_.
+Visit the HF collection of `quantized FP8 checkpoints of popular LLMs ready to use with vLLM <https://huggingface.co/collections/neuralmagic/fp8-llms-for-vllm-666742ed2b78b7ac8df13127>`_.
 
 The FP8 types typically supported in hardware have two distinct representations, each useful in different scenarios:
 
@@ -29,14 +29,15 @@ In this mode, all Linear modules (except for the final ``lm_head``) have their w
 
 .. code-block:: python
 
-    from vllm import LLM
-    model = LLM("facebook/opt-125m", quantization="fp8")
-    # INFO 06-10 17:55:42 model_runner.py:157] Loading model weights took 0.1550 GB
-    result = model.generate("Hello, my name is")
+   from vllm import LLM
+   model = LLM("facebook/opt-125m", quantization="fp8")
+   # INFO 06-10 17:55:42 model_runner.py:157] Loading model weights took 0.1550 GB
+   result = model.generate("Hello, my name is")
 
 .. warning::
 
-    Currently, we load the model at original precision before quantizing down to 8-bits, so you need enough memory to load the whole model.
+   Currently, you need to load the model at original precision before quantizing
+   down to 8-bits, so you need enough memory to load the whole model.
 
 Installation
 ------------
@@ -116,15 +117,15 @@ Load and run the model in ``vllm``:
    model = LLM("./Meta-Llama-3-8B-Instruct-FP8-Dynamic")
    model.generate("Hello my name is")
 
-Evaluate accuracy with ``lm_eval`` (for example on 250 samples of ``gsm8k``):
+Evaluate accuracy with ``lm_eval`` (for example, on 250 samples of ``gsm8k``):
 
 .. note::
 
-   Quantized models can be sensitive to the presence of the ``bos`` token. ``lm_eval`` does not add a ``bos`` token by default, so make sure to include the ``add_bos_token=True`` argument when running your evaluations.
+   Quantized models can be sensitive to the presence of the ``bos`` token. ``lm_eval`` does not add the ``bos`` token by default, so make sure to include the ``add_bos_token=True`` argument when running your evaluations.
 
 .. code-block:: console
 
-   $ MODEL=$PWD/Meta-Llama-3-8B-Instruct-FP8-Dynamic 
+   $ MODEL=$PWD/Meta-Llama-3-8B-Instruct-FP8-Dynamic
    $ lm_eval \
      --model vllm \
      --model_args pretrained=$MODEL,add_bos_token=True \
@@ -142,7 +143,7 @@ Here's an example of the resulting scores:
 Troubleshooting and Support
 ---------------------------
 
-If you encounter any issues or have feature requests, please open an issue on the ``vllm-project/llm-compressor`` GitHub repository.
+If you encounter any issues or have feature requests, open an issue on the ``vllm-project/llm-compressor`` GitHub repository.
 
 
 Deprecated Flow
@@ -153,12 +154,12 @@ Deprecated Flow
    The following information is preserved for reference and search purposes.
    The quantization method described below is deprecated in favor of the ``llmcompressor`` method described above.
 
-For static per-tensor offline quantization to FP8, please install the `AutoFP8 library <https://github.com/neuralmagic/autofp8>`_.
+For static per-tensor offline quantization to FP8, install the `AutoFP8 library <https://github.com/neuralmagic/autofp8>`_.
 
 .. code-block:: bash
 
-    git clone https://github.com/neuralmagic/AutoFP8.git
-    pip install -e AutoFP8
+   git clone https://github.com/neuralmagic/AutoFP8.git
+   pip install -e AutoFP8
 
 This package introduces the ``AutoFP8ForCausalLM`` and ``BaseQuantizeConfig`` objects for managing how your model will be compressed.
 
@@ -179,15 +180,15 @@ You can use AutoFP8 with calibration data to produce per-tensor static scales fo
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_dir, use_fast=True)
     tokenizer.pad_token = tokenizer.eos_token
 
-    # Load and tokenize 512 dataset samples for calibration of activation scales
+    # Load and tokenize 512 dataset samples for calibration of activation scales.
     ds = load_dataset("mgoin/ultrachat_2k", split="train_sft").select(range(512))
     examples = [tokenizer.apply_chat_template(batch["messages"], tokenize=False) for batch in ds]
     examples = tokenizer(examples, padding=True, truncation=True, return_tensors="pt").to("cuda")
 
-    # Define quantization config with static activation scales
+    # Define quantization config with static activation scales.
     quantize_config = BaseQuantizeConfig(quant_method="fp8", activation_scheme="static")
 
-    # Load the model, quantize, and save checkpoint
+    # Load the model, quantize, and save the checkpoint.
     model = AutoFP8ForCausalLM.from_pretrained(pretrained_model_dir, quantize_config)
     model.quantize(examples)
     model.save_quantized(quantized_model_dir)
@@ -197,8 +198,8 @@ Finally, you can load the quantized model checkpoint directly in vLLM.
 
 .. code-block:: python
 
-    from vllm import LLM
-    model = LLM(model="Meta-Llama-3-8B-Instruct-FP8/")
-    # INFO 06-10 21:15:41 model_runner.py:159] Loading model weights took 8.4596 GB
-    result = model.generate("Hello, my name is")
+   from vllm import LLM
+   model = LLM(model="Meta-Llama-3-8B-Instruct-FP8/")
+   # INFO 06-10 21:15:41 model_runner.py:159] Loading model weights took 8.4596 GB
+   result = model.generate("Hello, my name is")
 

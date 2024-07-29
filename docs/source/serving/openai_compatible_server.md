@@ -47,8 +47,8 @@ We currently support the following OpenAI APIs:
 ## Extra Parameters
 
 vLLM supports a set of parameters that are not part of the OpenAI API.
-In order to use them, you can pass them as extra parameters in the OpenAI client.
-Or directly merge them into the JSON payload if you are using HTTP call directly.
+In order to use them, you can pass them as extra parameters in the OpenAI client,
+or directly merge them into the JSON payload if you are using HTTP call directly.
 
 ```python
 completion = client.chat.completions.create(
@@ -146,20 +146,20 @@ The following extra parameters are supported:
 
 In order for the language model to support chat protocol, vLLM requires the model to include
 a chat template in its tokenizer configuration. The chat template is a Jinja2 template that
-specifies how are roles, messages, and other chat-specific tokens are encoded in the input.
+specifies how roles, messages, and other chat-specific tokens are encoded in the input.
 
-An example chat template for `NousResearch/Meta-Llama-3-8B-Instruct` can be found [here](https://github.com/meta-llama/llama3?tab=readme-ov-file#instruction-tuned-models)
+An example of a chat template for `NousResearch/Meta-Llama-3-8B-Instruct` can be found [here](https://github.com/meta-llama/llama3?tab=readme-ov-file#instruction-tuned-models)
 
-Some models do not provide a chat template even though they are instruction/chat fine-tuned. For those model,
-you can manually specify their chat template in the `--chat-template` parameter with the file path to the chat
-template, or the template in string form. Without a chat template, the server will not be able to process chat
-and all chat requests will error.
+Some models do not provide a chat template even though they are instruction/chat fine-tuned. For those models,
+you can manually specify their chat template with the `--chat-template` parameter followed by the file path to the chat
+template, or the template in string form. Without a chat template, the server will not be able to process the chat
+and all chat requests will throw an error.
 
 ```bash
 vllm serve <model> --chat-template ./path-to-chat-template.jinja
 ```
 
-vLLM community provides a set of chat templates for popular models. You can find them in the examples
+vLLM community provides a set of chat templates for popular models. You can find them in the "examples"
 directory [here](https://github.com/vllm-project/vllm/tree/main/examples/)
 
 With the inclusion of multi-modal chat APIs, the OpenAI spec now accepts chat messages in a new format which specifies
@@ -174,7 +174,7 @@ completion = client.chat.completions.create(
 ```
 Most chat templates for LLMs expect the `content` to be a `string` but there are some newer models like
 `meta-llama/Llama-Guard-3-1B` that expect the content to be parsed with the new OpenAI spec. In order to choose which
-format the content needs to be parsed in by vLLM, please use the `--chat-template-text-format` argument to specify
+format the content needs to be parsed in by vLLM, use the `--chat-template-text-format` argument to specify
 between `string` or `openai`. The default value is `string` and vLLM internally converts both spec formats to match
 this, unless explicitly specified.
 
@@ -215,10 +215,10 @@ The order of priorities is `command line > config file values > defaults`.
 ---
 
 ## Tool calling in the chat completion API
-vLLM currently supports named function calling, as well as the `auto` and `none` options for the `tool_choice` field in the chat completion API. The `tool_choice` option `required` is **not yet supported** but on the roadmap.
+vLLM currently supports named function calling, as well as the `auto` and `none` options for the `tool_choice` field in the chat completion API. The `required` option of `tool_choice` is **not yet supported** but on the roadmap.
 
 It is the callers responsibility to prompt the model with the tool information, vLLM will not automatically manipulate the prompt.
-Please see below for recommended configuration and chat templates to use when function calling is to be used with the different models.
+See the recommended configuration and chat templates below for use when function calling is required for the different models.
 
 
 ### Named Function Calling
@@ -245,12 +245,12 @@ that contain previously generated tool calls. Hermes, Mistral and Llama models h
 template configured in the `tokenizer_config.json`. In this case, it will be used per the `transformers` specification. More on this [here](https://huggingface.co/docs/transformers/en/chat_templating#why-do-some-models-have-multiple-templates)
 from HuggingFace; and you can find an example of this in a `tokenizer_config.json` [here](https://huggingface.co/NousResearch/Hermes-2-Pro-Llama-3-8B/blob/main/tokenizer_config.json)
 
-If your favorite tool-calling model is not supported, please feel free to contribute a parser & tool use chat template!
+If your favorite tool-calling model is not supported, feel free to contribute a parser & tool use chat template!
 
 
 #### Hermes Models (`hermes`)
 
-All Nous Research Hermes-series models newer than Hermes 2 Pro should be supported.
+All NousResearch Hermes-series models newer than Hermes 2 Pro should be supported.
 * `NousResearch/Hermes-2-Pro-*`
 * `NousResearch/Hermes-2-Theta-*`
 * `NousResearch/Hermes-3-*`

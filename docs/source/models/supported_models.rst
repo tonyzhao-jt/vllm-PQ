@@ -11,38 +11,40 @@ For other models, you can check the :code:`config.json` file inside the model re
 If the :code:`"architectures"` field contains a model architecture listed below, then it should be supported in theory.
 
 .. tip::
-    The easiest way to check if your model is really supported at runtime is to run the program below:
 
-    .. code-block:: python
+   The easiest way to check if your model is supported is to run the program below:
 
-        from vllm import LLM
+   .. code-block:: python
 
-        llm = LLM(model=...)  # Name or path of your model
-        output = llm.generate("Hello, my name is")
-        print(output)
+       from vllm import LLM
 
-    If vLLM successfully generates text, it indicates that your model is supported.
+       llm = LLM(model=...)  # The name or the path of your model.
+       output = llm.generate("Hello, my name is")
+       print(output)
 
-Otherwise, please refer to :ref:`Adding a New Model <adding_a_new_model>` and :ref:`Enabling Multimodal Inputs <enabling_multimodal_inputs>` 
+   If vLLM successfully generates text, it indicates that your model is supported.
+
+Otherwise, please refer to :ref:`Adding a New Model <adding_a_new_model>` and :ref:`Enabling Multimodal Inputs <enabling_multimodal_inputs>`
 for instructions on how to implement your model in vLLM.
 Alternatively, you can `open an issue on GitHub <https://github.com/vllm-project/vllm/issues/new/choose>`_ to request vLLM support.
 
 .. note::
-    To use models from `ModelScope <https://www.modelscope.cn>`_ instead of HuggingFace Hub, set an environment variable:
 
-    .. code-block:: shell
+   To use models from `ModelScope <https://www.modelscope.cn>`_ instead of HuggingFace Hub, set an environment variable:
 
-       $ export VLLM_USE_MODELSCOPE=True
+   .. code-block:: shell
 
-    And use with :code:`trust_remote_code=True`.
+      $ export VLLM_USE_MODELSCOPE=True
 
-    .. code-block:: python
+   And use with :code:`trust_remote_code=True`.
 
-        from vllm import LLM
+   .. code-block:: python
 
-        llm = LLM(model=..., revision=..., trust_remote_code=True)  # Name or path of your model
-        output = llm.generate("Hello, my name is")
-        print(output)
+      from vllm import LLM
+
+      llm = LLM(model=..., revision=..., trust_remote_code=True)  # Name or path of your model
+      output = llm.generate("Hello, my name is")
+      print(output)
 
 Text-only Language Models
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -82,8 +84,8 @@ Text Generation
   * - :code:`BartForConditionalGeneration`
     - BART
     - :code:`facebook/bart-base`, :code:`facebook/bart-large-cnn`, etc.
-    - 
-    - 
+    -
+    -
   * - :code:`ChatGLMModel`
     - ChatGLM
     - :code:`THUDM/chatglm2-6b`, :code:`THUDM/chatglm3-6b`, etc.
@@ -107,12 +109,12 @@ Text Generation
   * - :code:`DeepseekForCausalLM`
     - DeepSeek
     - :code:`deepseek-ai/deepseek-llm-67b-base`, :code:`deepseek-ai/deepseek-llm-7b-chat` etc.
-    - 
+    -
     - ✅︎
   * - :code:`DeepseekV2ForCausalLM`
     - DeepSeek-V2
     - :code:`deepseek-ai/DeepSeek-V2`, :code:`deepseek-ai/DeepSeek-V2-Chat` etc.
-    - 
+    -
     - ✅︎
   * - :code:`ExaoneForCausalLM`
     - EXAONE-3
@@ -128,7 +130,7 @@ Text Generation
     - FalconMamba
     - :code:`tiiuae/falcon-mamba-7b`, :code:`tiiuae/falcon-mamba-7b-instruct`, etc.
     - ✅︎
-    -  
+    -
   * - :code:`GemmaForCausalLM`
     - Gemma
     - :code:`google/gemma-2b`, :code:`google/gemma-7b`, etc.
@@ -188,7 +190,7 @@ Text Generation
     - Jamba
     - :code:`ai21labs/AI21-Jamba-1.5-Large`, :code:`ai21labs/AI21-Jamba-1.5-Mini`, :code:`ai21labs/Jamba-v0.1`, etc.
     - ✅︎
-    - 
+    -
   * - :code:`LlamaForCausalLM`
     - Llama 3.1, Llama 3, Llama 2, LLaMA, Yi
     - :code:`meta-llama/Meta-Llama-3.1-405B-Instruct`, :code:`meta-llama/Meta-Llama-3.1-70B`, :code:`meta-llama/Meta-Llama-3-70B-Instruct`, :code:`meta-llama/Llama-2-70b-hf`, :code:`01-ai/Yi-34B`, etc.
@@ -272,7 +274,7 @@ Text Generation
   * - :code:`PersimmonForCausalLM`
     - Persimmon
     - :code:`adept/persimmon-8b-base`, :code:`adept/persimmon-8b-chat`, etc.
-    - 
+    -
     - ✅︎
   * - :code:`QWenLMHeadModel`
     - Qwen
@@ -328,7 +330,7 @@ Text Embedding
   * - :code:`Gemma2Model`
     - Gemma2-based
     - :code:`BAAI/bge-multilingual-gemma2`, etc.
-    - 
+    -
     - ✅︎
   * - :code:`LlamaModel`, :code:`LlamaForCausalLM`, :code:`MistralModel`, etc.
     - Llama-based
@@ -434,37 +436,37 @@ Text Generation
     - Chameleon
     - T + I
     - :code:`facebook/chameleon-7b` etc.
-    - 
+    -
     - ✅︎
   * - :code:`FuyuForCausalLM`
     - Fuyu
     - T + I
     - :code:`adept/fuyu-8b` etc.
-    - 
+    -
     - ✅︎
   * - :code:`ChatGLMModel`
     - GLM-4V
     - T + I
     - :code:`THUDM/glm-4v-9b` etc.
-    - 
+    -
     - ✅︎
   * - :code:`H2OVLChatModel`
     - H2OVL
     - T + I\ :sup:`E+`
     - :code:`h2oai/h2ovl-mississippi-800m`, :code:`h2oai/h2ovl-mississippi-2b`, etc.
-    - 
+    -
     - ✅︎
   * - :code:`Idefics3ForConditionalGeneration`
     - Idefics3
     - T + I
     - :code:`HuggingFaceM4/Idefics3-8B-Llama3` etc.
     - ✅︎
-    - 
+    -
   * - :code:`InternVLChatModel`
     - InternVL2
     - T + I\ :sup:`E+`
     - :code:`OpenGVLab/Mono-InternVL-2B`, :code:`OpenGVLab/InternVL2-4B`, :code:`OpenGVLab/InternVL2-8B`, etc.
-    - 
+    -
     - ✅︎
   * - :code:`LlavaForConditionalGeneration`
     - LLaVA-1.5
@@ -512,13 +514,13 @@ Text Generation
     - NVLM-D 1.0
     - T + I\ :sup:`E+`
     - :code:`nvidia/NVLM-D-72B`, etc.
-    - 
+    -
     - ✅︎
   * - :code:`PaliGemmaForConditionalGeneration`
     - PaliGemma
     - T + I\ :sup:`E`
     - :code:`google/paligemma-3b-pt-224`, :code:`google/paligemma-3b-mix-224`, etc.
-    - 
+    -
     - ✅︎
   * - :code:`Phi3VForCausalLM`
     - Phi-3-Vision, Phi-3.5-Vision
@@ -561,7 +563,7 @@ Text Generation
 | :sup:`+` Multiple items can be inputted per text prompt for this modality.
 
 .. note::
-  vLLM currently only supports adding LoRA to the language backbone of multimodal models.               
+  vLLM currently only supports adding LoRA to the language backbone of multimodal models.
 
 .. note::
   For :code:`openbmb/MiniCPM-V-2`, the official repo doesn't work yet, so we need to use a fork (:code:`HwwwH/MiniCPM-V-2`) for now.
@@ -584,7 +586,7 @@ Multimodal Embedding
     - LLaVA-NeXT-based
     - T / I
     - :code:`royokong/e5-v`
-    - 
+    -
     - ✅︎
   * - :code:`Phi3VForCausalLM`
     - Phi-3-Vision-based
@@ -596,7 +598,7 @@ Multimodal Embedding
     - Qwen2-VL-based
     - T + I
     - :code:`MrLight/dse-qwen2-2b-mrl-v1`
-    - 
+    -
     - ✅︎
 
 .. important::
@@ -627,7 +629,7 @@ Note that, as an inference engine, vLLM does not introduce new models. Therefore
 
 We have the following levels of testing for models:
 
-1. **Strict Consistency**: We compare the output of the model with the output of the model in the HuggingFace Transformers library under greedy decoding. This is the most stringent test. Please refer to `models tests <https://github.com/vllm-project/vllm/blob/main/tests/models>`_ for the models that have passed this test.
+1. **Strict Consistency**: We compare the output of the model with the output of the model in the HuggingFace Transformers library under greedy decoding. This is the most stringent test. Refer to `models tests <https://github.com/vllm-project/vllm/blob/main/tests/models>`_ for the models that have passed this test.
 2. **Output Sensibility**: We check if the output of the model is sensible and coherent, by measuring the perplexity of the output and checking for any obvious errors. This is a less stringent test.
-3. **Runtime Functionality**: We check if the model can be loaded and run without errors. This is the least stringent test. Please refer to `functionality tests <https://github.com/vllm-project/vllm/tree/main/tests>`_ and `examples <https://github.com/vllm-project/vllm/tree/main/examples>`_ for the models that have passed this test.
-4. **Community Feedback**: We rely on the community to provide feedback on the models. If a model is broken or not working as expected, we encourage users to raise issues to report it or open pull requests to fix it. The rest of the models fall under this category.
+3. **Runtime Functionality**: We check if the model can be loaded and run without errors. This is the least stringent test. Refer to `functionality tests <https://github.com/vllm-project/vllm/tree/main/tests>`_ and `examples <https://github.com/vllm-project/vllm/tree/main/examples>`_ for the models that have passed this test.
+4. **Community Feedback**: We rely on the community to provide feedback on the models. If a model is broken or not working as expected, we encourage users to open issues to report it or open pull requests to fix it. The rest of the models fall under this category.
