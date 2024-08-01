@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Dict, FrozenSet, List, Optional, Protocol, Tuple
 
+import torch
+
 from vllm.utils import Device
 
 BlockId = int

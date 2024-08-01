@@ -1,5 +1,7 @@
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
+import torch
+
 from vllm.core.block.interfaces import (Block, BlockAllocator, BlockId,
                                         DeviceAwareBlockAllocator)
 from vllm.core.block.naive_block import NaiveBlock, NaiveBlockAllocator

@@ -1,5 +1,5 @@
 """CacheEngine class for managing the KV cache."""
-from typing import List
+from typing import Dict, List
 
 import torch
 
@@ -100,6 +100,59 @@ class CacheEngine:
 
     def copy(self, src_to_dsts: torch.Tensor) -> None:
         self.attn_backend.copy_blocks(self.gpu_cache, src_to_dsts)
+
+    # def get_kv_cache_from_block(
+    #         self, kv_from_block: Dict[int, torch.Tensor]) -> None:
+    #     for block_id in kv_from_block:
+    #         kv_from_block[block_id] = kv_cache
+
+    # def put_kv_cache_into_block(self, kv_to_block_buffer: List[int]):
+    #     '''TODO
+    #             1) dereference the ptr to the buffer,
+    #               convert into Block object and KV cache tensor
+    #             2) use some attn_backend function to
+    #               insert the KV cache tensor into the block
+    #             3) signal to corresponding function in
+    #               cpu_gpu_block_allocator.py to return
+    #               (add special val to shared buffer?)
+    #     '''
+    #     pass
+
+    # def get_kv_cache_from_block(self, kv_from_block: Dict[int, torch.Tensor]):
+    #     '''TODO
+    #             1) dereference the ptr to the buffer,
+    #               convert into Block object
+    #             2) use some attn_backend function to
+    #               extract the kv cache from the Block
+    #             3) add kv cache to buffer and signal to
+    #               corresponding function in
+    #               cpu_gpu_block_allocator.py to return
+    #     '''
+    #     pass
+    # async def get_kv_cache_from_block(self,
+    #                                   block: Block) -> List[torch.Tensor]:
+    #     """Return the corresponding KV cache of the given block.
+
+    #     Args:
+    #         blocks: Block to extract kv_cache from
+
+    #     Returns:
+    #         List[torch.Tensor]: The kv_cache object.
+    #     """
+    #     raise NotImplementedError
+
+    # async def put_kv_cache_into_block(self, block: Block,
+    #                                   kv_cache: List[torch.Tensor]) -> None:
+    #     """Inserts the KV cache into the given block
+
+    #     Args:
+    #         block: The block to receive the kv_cache
+    #         kv_cache: The kv_cache to insert into the block
+
+    #     Returns:
+    #         None
+    #     """
+    #     raise NotImplementedError
 
     @staticmethod
     def get_cache_block_size(

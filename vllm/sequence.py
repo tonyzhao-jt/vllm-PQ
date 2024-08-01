@@ -459,6 +459,7 @@ class SequenceGroup:
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
         self._first_seq = next(iter(self.seqs_dict.values()))
+        self.kv_from_block: Optional[Dict[int, torch.Tensor]] = None
 
     @property
     def prompt(self) -> Optional[str]:
@@ -775,6 +776,8 @@ class CompletionSequenceGroupOutput(SequenceGroupOutput):
         self.samples = samples
         # Prompt logprob for each prompt query token.
         self.prompt_logprobs = prompt_logprobs
+        # Optional mapping from Block to its KV cache tensor
+        self.kv_from_block: Optional[Dict[int, torch.Tensor]] = None
 
     def __repr__(self) -> str:
         return (f"CompletionSequenceGroupOutput(samples={self.samples}, "
@@ -979,6 +982,15 @@ class ExecuteModelRequest:
     virtual_engine: int = 0
     # The number of slots for lookahead decoding.
     num_lookahead_slots: int = 0
+
+    # Buffer containing the KV cache (torch.Tensor) and
+    # the Block we want to add it to
+    kv_to_block_buffer: List[int] = []
+
+    # Buffer containing the block we want to extract
+    # the KV cache (torch.Tensor) from
+    kv_from_block: Dict[int, torch.Tensor] = {}
+
     # The number of requests in the running queue.
     running_queue_size: int = 0
     # Optional hidden states from prior step.
