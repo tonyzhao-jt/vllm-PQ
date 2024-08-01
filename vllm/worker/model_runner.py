@@ -557,6 +557,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
 
         # Sequence and query lengths.
         seq_lens.extend([1] * cuda_graph_pad_size)
+        query_lens.extend([1] * cuda_graph_pad_size)
 
         # Attention metadata.
         attn_metadata = self.attn_metadata_builder.build(
@@ -1032,8 +1033,8 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
         input_positions = torch.zeros(max_batch_size, dtype=torch.long).cuda()
         slot_mapping = torch.empty(max_batch_size, dtype=torch.long).cuda()
         slot_mapping.fill_(_PAD_SLOT_ID)
-        seq_lens = torch.ones(max_batch_size, dtype=torch.int32).cuda()
         block_tables = torch.from_numpy(self.graph_block_tables).cuda()
+
         intermediate_inputs = None
         if not get_pp_group().is_first_rank:
             intermediate_inputs = self.model.make_empty_intermediate_tensors(
@@ -1070,6 +1071,19 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
             last_page_len_buffer = torch.empty(max_batch_size,
                                                dtype=torch.int32,
                                                device=self.device)
+        else:
+            query_start_loc = torch.arange(0,
+                                           max_batch_size + 2,
+                                           dtype=torch.int32,
+                                           device=self.device)
+            seq_start_loc = torch.arange(0,
+                                         max_batch_size + 2,
+                                         dtype=torch.int32,
+                                         device=self.device)
+            seq_lens = [1] * max_batch_size
+            seq_lens_tensor = torch.ones(max_batch_size,
+                                         dtype=torch.int32,
+                                         device=self.device)
 
         with graph_capture() as graph_capture_context:
             # NOTE: Capturing the largest batch size first may help reduce the
@@ -1138,13 +1152,13 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                             num_prefill_tokens=0,
                             num_decode_tokens=batch_size,
                             slot_mapping=slot_mapping[:batch_size],
-                            seq_lens=None,
-                            seq_lens_tensor=seq_lens[:batch_size],
-                            max_query_len=None,
+                            seq_lens=seq_lens[:batch_size],
+                            seq_lens_tensor=seq_lens_tensor[:batch_size],
+                            max_query_len=1,
                             max_prefill_seq_len=0,
                             max_decode_seq_len=self.max_seq_len_to_capture,
-                            query_start_loc=None,
-                            seq_start_loc=None,
+                            query_start_loc=query_start_loc[:batch_size + 1],
+                            seq_start_loc=seq_start_loc[:batch_size + 1],
                             context_lens_tensor=None,
                             block_tables=block_tables[:batch_size],
                             use_cuda_graph=True,
@@ -1336,16 +1350,11 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
 
         # Currently cuda graph is only supported by the decode phase.
         assert model_input.attn_metadata is not None
-        prefill_meta = model_input.attn_metadata.prefill_metadata
-        decode_meta = model_input.attn_metadata.decode_metadata
-        # TODO(andoorve): We can remove this once all
-        # virtual engines share the same kv cache.
-        virtual_engine = model_input.virtual_engine
-        if prefill_meta is None and decode_meta.use_cuda_graph:
+        if model_input.attn_metadata.use_cuda_graph:
             assert model_input.input_tokens is not None
             graph_batch_size = model_input.input_tokens.shape[0]
-            model_executable = self.graph_runners[virtual_engine][
-                graph_batch_size]
+            model_executable = self.graph_runners[
+                model_input.virtual_engine][graph_batch_size]
         else:
             model_executable = self.model
 
@@ -1387,7 +1396,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             if model_input.is_prompt:
                 hidden_states = hidden_or_intermediate_states.index_select(
                     0, indices)
-            elif decode_meta.use_cuda_graph:
+            elif model_input.attn_metadata.use_cuda_graph:
                 hidden_states = hidden_or_intermediate_states[:len(indices)]
             else:
                 hidden_states = hidden_or_intermediate_states
@@ -1493,9 +1502,10 @@ class CUDAGraphRunner:
                 "positions": positions,
                 "kv_caches": kv_caches,
                 "slot_mapping": attn_metadata.slot_mapping,
-                "seq_lens_tensor":
-                attn_metadata.decode_metadata.seq_lens_tensor,
-                "block_tables": attn_metadata.decode_metadata.block_tables,
+                "block_tables": attn_metadata.block_tables,
+                "seq_start_loc": attn_metadata.seq_start_loc,
+                "query_start_loc": attn_metadata.query_start_loc,
+                "seq_lens_tensor": attn_metadata.seq_lens_tensor,
                 **kwargs,
             }
         if intermediate_inputs is not None:
@@ -1526,11 +1536,16 @@ class CUDAGraphRunner:
         self.input_buffers["slot_mapping"].copy_(attn_metadata.slot_mapping,
                                                  non_blocking=True)
         if self.backend_name != "flashinfer":
-            self.input_buffers["seq_lens_tensor"].copy_(
-                attn_metadata.decode_metadata.seq_lens_tensor,
-                non_blocking=True)
             self.input_buffers["block_tables"].copy_(
-                attn_metadata.decode_metadata.block_tables, non_blocking=True)
+                attn_metadata.block_tables, non_blocking=True)
+            self.input_buffers["query_start_loc"].copy_(
+                attn_metadata.query_start_loc, non_blocking=True)
+            self.input_buffers["seq_start_loc"].copy_(
+                attn_metadata.seq_start_loc, non_blocking=True)
+
+            self.input_buffers["seq_lens_tensor"].copy_(
+                attn_metadata.seq_lens_tensor, non_blocking=True)
+
         if "seqlen_agnostic_capture_inputs" in self.input_buffers:
             self.model.copy_inputs_before_cuda_graphs(self.input_buffers,
                                                       **kwargs)
