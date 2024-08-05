@@ -26,7 +26,8 @@ from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.cli_args import make_arg_parser
 # yapf conflicts with isort for this block
 # yapf: disable
-from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
+from vllm.entrypoints.openai.protocol import (AbortRequestRequest,
+                                              ChatCompletionRequest,
                                               ChatCompletionResponse,
                                               CompletionRequest,
                                               DetokenizeRequest,
@@ -223,6 +224,11 @@ async def create_embedding(request: EmbeddingRequest, raw_request: Request):
                             status_code=generator.code)
     else:
         return JSONResponse(content=generator.model_dump())
+
+
+@router.post("/v1/abort_request")
+async def abort_requests(request: AbortRequestRequest):
+    engine.engine.abort_request(request.request_id)
 
 
 def build_app(args):
