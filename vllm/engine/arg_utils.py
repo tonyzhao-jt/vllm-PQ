@@ -97,6 +97,7 @@ class EngineArgs:
     model_loader_extra_config: Optional[dict] = None
     ignore_patterns: Optional[Union[str, List[str]]] = None
     preemption_mode: Optional[str] = None
+    use_attention_sinks: bool = False
 
     scheduler_delay_factor: float = 0.0
     enable_chunked_prefill: Optional[bool] = None
@@ -484,6 +485,20 @@ class EngineArgs:
                   'Enabling this will use the fully sharded layers. '
                   'At high sequence length, max rank or '
                   'tensor parallel size, this is likely faster.'))
+        parser.add_argument(
+            "--device",
+            type=str,
+            default=EngineArgs.device,
+            choices=["auto", "cuda", "neuron", "cpu", 
+                     "openvino", "tpu", "xpu"],
+            help='Device type for vLLM execution.')
+        parser.add_argument(
+            "--use-attention-sinks",
+            type=bool,
+            action="store_true",
+            help=("If True, allow the model to use "
+                  "attention sinks and exceed its context "
+                  "length during decoding."))
         parser.add_argument('--enable-prompt-adapter',
                             action='store_true',
                             help='If True, enable handling of PromptAdapters.')
@@ -718,7 +733,8 @@ class EngineArgs:
             disable_sliding_window=self.disable_sliding_window,
             skip_tokenizer_init=self.skip_tokenizer_init,
             served_model_name=self.served_model_name,
-            multimodal_config=multimodal_config)
+            multimodal_config=multimodal_config,
+            use_attention_sinks=self.use_attention_sinks)
         cache_config = CacheConfig(
             block_size=self.block_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
@@ -728,6 +744,7 @@ class EngineArgs:
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
             cpu_offload_gb=self.cpu_offload_gb,
+            use_attention_sinks=self.use_attention_sinks,
         )
         parallel_config = ParallelConfig(
             pipeline_parallel_size=self.pipeline_parallel_size,
@@ -852,12 +869,16 @@ class EngineArgs:
         observability_config = ObservabilityConfig(
             otlp_traces_endpoint=self.otlp_traces_endpoint)
 
-        if (model_config.get_sliding_window() is not None
-                and scheduler_config.chunked_prefill_enabled
+        if model_config.get_sliding_window() is not None:
+            if (scheduler_config.chunked_prefill_enabled
                 and not scheduler_config.use_v2_block_manager):
-            raise ValueError(
-                "Chunked prefill is not supported with sliding window. "
-                "Set --disable-sliding-window to disable sliding window.")
+                raise ValueError(
+                    "Chunked prefill is not supported with sliding window. "
+                    "Set --disable-sliding-window to disable sliding window.")
+            if model_config.use_attention_sinks:
+                raise ValueError(
+                    "Attention sinks are not supported with sliding window. "
+                    "Set --disable-sliding-window to disable sliding window.")
 
         return EngineConfig(
             model_config=model_config,

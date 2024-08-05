@@ -492,6 +492,25 @@ class VllmRunner:
             outputs.append((output_ids, output_str, output_logprobs))
         return outputs
 
+    def generate_w_cum_logprobs(
+        self,
+        prompts: List[str],
+        sampling_params: SamplingParams,
+    ) -> List[Tuple[str, float]]:
+        assert sampling_params.logprobs is not None
+        req_outputs = self.model.generate(prompts,
+                                          sampling_params=sampling_params)
+        outputs: List[Tuple[str, float]] = []
+        for req_output in req_outputs:
+            assert len(req_output.outputs) == 1, \
+                "This method expects only one CompletionOutput per request."
+            compl_output = req_output.outputs[0]
+            output_str = compl_output.text
+            output_logprob = compl_output.cumulative_logprob
+            output_avg_logprob = output_logprob / len(compl_output.token_ids)
+            outputs.append((output_str, output_avg_logprob))
+        return outputs
+    
     def generate_greedy(
         self,
         prompts: List[str],

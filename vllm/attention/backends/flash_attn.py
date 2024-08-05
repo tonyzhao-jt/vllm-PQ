@@ -217,6 +217,7 @@ class FlashAttentionMetadataBuilder(
         self.block_size = input_builder.block_size
         self.use_v2_block_manager = (
             input_builder.scheduler_config.use_v2_block_manager)
+        self.model_config = input_builder.model_config
 
     def _add_seq_group(
             self, inter_data: "ModelInputForGPUBuilder.InterDataForSeqGroup",
@@ -269,7 +270,8 @@ class FlashAttentionMetadataBuilder(
                 self.use_v2_block_manager)
             compute_slot_mapping(is_profile_run, self.slot_mapping, seq_id,
                                  seq_len, context_len, start_idx,
-                                 self.block_size, inter_data.block_tables)
+                                 self.block_size, inter_data.block_tables,
+                                 self.model_config)
 
     def build(self, seq_lens: List[int], query_lens: List[int],
               cuda_graph_pad_size: int, batch_size: int):

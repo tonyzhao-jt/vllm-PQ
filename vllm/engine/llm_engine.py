@@ -171,14 +171,24 @@ class LLMEngine:
         usage_context: UsageContext = UsageContext.ENGINE_CONTEXT,
         stat_loggers: Optional[Dict[str, StatLoggerBase]] = None,
     ) -> None:
+        if model_config.use_attention_sinks and not model_config.enforce_eager:
+            raise NotImplementedError("Attention sinks are not supported "
+                                      "with CUDA graphs currently, please use "
+                                      "enforce_eager=True.")
+        if model_config.use_attention_sinks and speculative_config:
+            raise NotImplementedError("Attention sinks are not supported "
+                                      "with speculative decoding currently.")
+        if model_config.use_attention_sinks and cache_config.enable_prefix_caching:
+            raise NotImplementedError("Attention sinks are not supported "
+                                      "with prefix caching currently.")
         logger.info(
             "Initializing an LLM engine (v%s) with config: "
             "model=%r, speculative_config=%r, tokenizer=%r, "
             "skip_tokenizer_init=%s, tokenizer_mode=%s, revision=%s, "
             "rope_scaling=%r, rope_theta=%r, tokenizer_revision=%s, "
             "trust_remote_code=%s, dtype=%s, max_seq_len=%d, "
-            "download_dir=%r, load_format=%s, tensor_parallel_size=%d, "
-            "pipeline_parallel_size=%d, "
+            "use_attention_sinks=%s, download_dir=%r, load_format=%s, "
+            "tensor_parallel_size=%d, pipeline_parallel_size=%d, "
             "disable_custom_all_reduce=%s, quantization=%s, "
             "enforce_eager=%s, kv_cache_dtype=%s, "
             "quantization_param_path=%s, device_config=%s, "
@@ -198,6 +208,7 @@ class LLMEngine:
             model_config.trust_remote_code,
             model_config.dtype,
             model_config.max_model_len,
+            model_config.use_attention_sinks,
             load_config.download_dir,
             load_config.load_format,
             parallel_config.tensor_parallel_size,
@@ -349,6 +360,7 @@ class LLMEngine:
                 stop_checker=StopChecker(
                     self.scheduler_config.max_model_len,
                     self.get_tokenizer_for_seq,
+                    model_config.use_attention_sinks,
                 ),
             ))
 
@@ -648,6 +660,11 @@ class LLMEngine:
         if lora_request is not None and not self.lora_config:
             raise ValueError(f"Got lora_request {lora_request} but LoRA is "
                              "not enabled!")
+        if (self.model_config.use_attention_sinks
+            and getattr(params, "use_beam_search", False)):
+            logger.warning("Beam search not supported with attention sinks "
+                           f"currently. Aborting request {request_id}.")
+            return
         if arrival_time is None:
             arrival_time = time.time()
 

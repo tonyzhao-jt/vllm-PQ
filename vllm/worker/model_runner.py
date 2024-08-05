@@ -25,6 +25,7 @@ except ImportError:
 
 import vllm.envs as envs
 from vllm.attention import AttentionMetadata, get_attn_backend
+from vllm.attention_sinks import apply_attn_sinks_to_model
 from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
                          ModelConfig, MultiModalConfig, ParallelConfig,
                          PromptAdapterConfig, SchedulerConfig)
@@ -286,6 +287,7 @@ class ModelInputForGPUBuilder(ModelRunnerInputBuilderBase[ModelInputForGPU]):
         self.runner = runner
         self.model_input_cls = self.runner._model_input_cls
         self.attn_backend = self.runner.attn_backend
+        self.model_config = self.runner.model_config
         self.scheduler_config = self.runner.scheduler_config
         self.sliding_window = self.runner.sliding_window
         self.block_size = self.runner.block_size
@@ -787,6 +789,13 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                     "provided. Defaulting to scaling factors of 1.0. "
                     "This may lead to less accurate results!")
 
+        if self.model_config.use_attention_sinks:
+            apply_attn_sinks_to_model(
+                self.model,
+                self.model_config,
+                self.cache_config,
+                self.scheduler_config.chunked_prefill_enabled
+            )
         if envs.VLLM_TEST_DYNAMO_GRAPH_CAPTURE:
             self.model = torch.compile(self.model,
                                        fullgraph=True,
@@ -1355,6 +1364,7 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         else:
             model_executable = self.model
 
+        # print(f"\texecute model: input_ids={model_input.input_tokens.tolist()}, positions={model_input.input_positions.tolist()}")
         multi_modal_kwargs = model_input.multi_modal_kwargs or {}
         seqlen_agnostic_kwargs = {
             "finished_requests_ids": model_input.finished_requests_ids,
