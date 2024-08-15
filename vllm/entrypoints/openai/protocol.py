@@ -12,7 +12,8 @@ from typing_extensions import Annotated
 from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
 from vllm.entrypoints.openai.logits_processors import get_logits_processors
 from vllm.pooling_params import PoolingParams
-from vllm.sampling_params import LogitsProcessor, SamplingParams
+from vllm.sampling_params import (LogitsProcessor, LogitsProcessorFactory,
+                                  SamplingParams)
 from vllm.utils import random_uuid
 
 # torch is mocked during docs generation,
@@ -232,10 +233,10 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
     # doc: end-chat-completion-extra-params
 
-    def to_sampling_params(
-            self, tokenizer: PreTrainedTokenizer,
-            guided_decode_logits_processor: Optional[LogitsProcessor],
-            default_max_tokens: int) -> SamplingParams:
+    def to_sampling_params(self, tokenizer: PreTrainedTokenizer,
+                           guided_decode_logits_processor: Optional[Union[
+                               LogitsProcessor, LogitsProcessorFactory]],
+                           default_max_tokens: int) -> SamplingParams:
         max_tokens = self.max_tokens
         if max_tokens is None:
             max_tokens = default_max_tokens

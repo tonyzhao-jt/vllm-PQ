@@ -15,7 +15,7 @@ from vllm.inputs.parse import is_valid_encoder_decoder_llm_inputs
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
 from vllm.prompt_adapter.request import PromptAdapterRequest
-from vllm.sampling_params import SamplingParams
+from vllm.sampling_params import LogitsProcessor, SamplingParams
 
 if TYPE_CHECKING:
     from vllm.inputs import LLMInputs
@@ -140,6 +140,7 @@ class SequenceData:
         # The number of tokens that are computed (that run against the model).
         self._num_computed_tokens = 0
         self._stage: SequenceStage = SequenceStage.PREFILL
+        self.logits_processors: List[LogitsProcessor] = []
 
         self._update_cached_all_tokens()
 

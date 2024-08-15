@@ -96,7 +96,8 @@ class OpenAIServingCompletion(OpenAIServing):
                 lora_request)
 
             guided_decode_logits_processor = (
-                await self._guided_decode_logits_processor(request, tokenizer))
+                await self._guided_decode_logits_processor_factory(
+                    request, tokenizer))
             prompts = list(
                 self._tokenize_prompt_input_or_inputs(
                     request,

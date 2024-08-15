@@ -17,12 +17,23 @@ from vllm.model_executor.guided_decoding.guided_fields import (
 from vllm.model_executor.guided_decoding.outlines_decoding import (
     get_local_outlines_guided_decoding_logits_processor,
     get_outlines_guided_decoding_logits_processor)
-from vllm.sampling_params import LogitsProcessor
+from vllm.sampling_params import LogitsProcessor, LogitsProcessorFactory
+
+
+class LMFormatDecodingLogitsProcessorFactory(LogitsProcessorFactory):
+
+    def __init__(self, tokenizer_data, character_level_parser):
+        self.tokenizer_data = tokenizer_data
+        self.character_level_parser = character_level_parser
+
+    def get_processor(self) -> LogitsProcessor:
+        return build_vllm_logits_processor(self.tokenizer_data,
+                                           self.character_level_parser)
 
 
 async def get_lm_format_enforcer_guided_decoding_logits_processor(
         request: Union[CompletionRequest, ChatCompletionRequest],
-        tokenizer) -> Optional[LogitsProcessor]:
+        tokenizer) -> Optional[LMFormatDecodingLogitsProcessorFactory]:
     """
     Given an OpenAI-compatible request, check for guided decoding parameters
     and get the necessary logits processor for the given guide.
@@ -52,9 +63,8 @@ async def get_lm_format_enforcer_guided_decoding_logits_processor(
     else:
         return None
 
-    logits_processor = build_vllm_logits_processor(tokenizer_data,
-                                                   character_level_parser)
-    return logits_processor
+    return LMFormatDecodingLogitsProcessorFactory(tokenizer_data,
+                                                  character_level_parser)
 
 
 def get_local_lm_format_enforcer_guided_decoding_logits_processor(
