@@ -59,7 +59,7 @@ static void quantize_row_q8_1_cuda(const half* x, void* vy, const int kx,
   quantize_q8_1<<<num_blocks, block_size, 0, stream>>>(x, vy, kx, kx_padded);
 }
 
-torch::Tensor ggml_dequantize(torch::Tensor W,  // quant weight
+torch::Tensor ggml_dequantize(torch::Tensor const& W,  // quant weight
                               int8_t type, int64_t m, int64_t n) {
   const at::cuda::OptionalCUDAGuard device_guard(device_of(W));
   auto options =
@@ -67,12 +67,13 @@ torch::Tensor ggml_dequantize(torch::Tensor W,  // quant weight
   at::Tensor DW = torch::empty({m, n}, options);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
   const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(type);
-  to_fp16_cuda((void*)W.data_ptr(), (half*)DW.data_ptr(), m * n, stream);
+  to_fp16_cuda((void const*)W.const_data_ptr(), (half*)DW.mutable_data_ptr(),
+               m * n, stream);
   return DW;
 }
 
-torch::Tensor ggml_mul_mat_vec_a8(torch::Tensor W,  // quant weight
-                                  torch::Tensor X,  // input
+torch::Tensor ggml_mul_mat_vec_a8(torch::Tensor const& W,  // quant weight
+                                  torch::Tensor const& X,  // input
                                   int8_t type, int64_t row) {
   int col = X.sizes()[1];
   const int padded = (col + 512 - 1) / 512 * 512;
@@ -83,95 +84,105 @@ torch::Tensor ggml_mul_mat_vec_a8(torch::Tensor W,  // quant weight
   cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
   options = torch::TensorOptions().dtype(torch::kInt32).device(W.device());
   at::Tensor quant_X = torch::empty({1, padded / 32 * 9}, options);
-  quantize_row_q8_1_cuda((half*)X.data_ptr(), (void*)quant_X.data_ptr(), col, 1,
-                         stream);
+  quantize_row_q8_1_cuda((half*)X.const_data_ptr(),
+                         (void*)quant_X.mutable_data_ptr(), col, 1, stream);
   switch (type) {
     case 2:
-      mul_mat_vec_q4_0_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q4_0_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 3:
-      mul_mat_vec_q4_1_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q4_1_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 6:
-      mul_mat_vec_q5_0_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q5_0_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 7:
-      mul_mat_vec_q5_1_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q5_1_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 8:
-      mul_mat_vec_q8_0_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q8_0_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 10:
-      mul_mat_vec_q2_K_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q2_K_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 11:
-      mul_mat_vec_q3_K_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q3_K_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 12:
-      mul_mat_vec_q4_K_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q4_K_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 13:
-      mul_mat_vec_q5_K_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q5_K_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 14:
-      mul_mat_vec_q6_K_q8_1_cuda((void*)W.data_ptr(), (void*)quant_X.data_ptr(),
-                                 (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_q6_K_q8_1_cuda((void*)W.const_data_ptr(),
+                                 (void*)quant_X.const_data_ptr(),
+                                 (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 16:
-      mul_mat_vec_iq2_xxs_q8_1_cuda((void*)W.data_ptr(),
-                                    (void*)quant_X.data_ptr(),
-                                    (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq2_xxs_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 17:
-      mul_mat_vec_iq2_xs_q8_1_cuda((void*)W.data_ptr(),
-                                   (void*)quant_X.data_ptr(),
-                                   (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq2_xs_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 18:
-      mul_mat_vec_iq3_xxs_q8_1_cuda((void*)W.data_ptr(),
-                                    (void*)quant_X.data_ptr(),
-                                    (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq3_xxs_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 19:
-      mul_mat_vec_iq1_s_q8_1_cuda((void*)W.data_ptr(),
-                                  (void*)quant_X.data_ptr(),
-                                  (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq1_s_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 20:
-      mul_mat_vec_iq4_nl_q8_1_cuda((void*)W.data_ptr(),
-                                   (void*)quant_X.data_ptr(),
-                                   (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq4_nl_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 21:
-      mul_mat_vec_iq3_s_q8_1_cuda((void*)W.data_ptr(),
-                                  (void*)quant_X.data_ptr(),
-                                  (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq3_s_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 22:
-      mul_mat_vec_iq2_s_q8_1_cuda((void*)W.data_ptr(),
-                                  (void*)quant_X.data_ptr(),
-                                  (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq2_s_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
     case 23:
-      mul_mat_vec_iq4_xs_q8_1_cuda((void*)W.data_ptr(),
-                                   (void*)quant_X.data_ptr(),
-                                   (half*)Y.data_ptr(), col, row, stream);
+      mul_mat_vec_iq4_xs_q8_1_cuda(
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, stream);
       break;
   }
   return Y;
 }
 
-torch::Tensor ggml_mul_mat_a8(torch::Tensor W,  // quant weight
-                              torch::Tensor X,  // input
+torch::Tensor ggml_mul_mat_a8(torch::Tensor const& W,  // quant weight
+                              torch::Tensor const& X,  // input
                               int8_t type, int64_t row) {
   int col = X.sizes()[1];
   int padded = (col + 512 - 1) / 512 * 512;
@@ -183,59 +194,59 @@ torch::Tensor ggml_mul_mat_a8(torch::Tensor W,  // quant weight
   cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
   options = torch::TensorOptions().dtype(torch::kInt32).device(W.device());
   at::Tensor quant_X = torch::empty({batch, padded / 32 * 9}, options);
-  quantize_row_q8_1_cuda((half*)X.data_ptr(), (void*)quant_X.data_ptr(), col,
-                         batch, stream);
+  quantize_row_q8_1_cuda((half*)X.const_data_ptr(),
+                         (void*)quant_X.mutable_data_ptr(), col, batch, stream);
 
   switch (type) {
     case 2:
       ggml_mul_mat_q4_0_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 3:
       ggml_mul_mat_q4_1_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 6:
       ggml_mul_mat_q5_0_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 7:
       ggml_mul_mat_q5_1_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 8:
       ggml_mul_mat_q8_0_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 10:
       ggml_mul_mat_q2_K_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 11:
       ggml_mul_mat_q3_K_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 12:
       ggml_mul_mat_q4_K_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 13:
       ggml_mul_mat_q5_K_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
     case 14:
       ggml_mul_mat_q6_K_q8_1_cuda(
-          (void*)W.data_ptr(), (void*)quant_X.data_ptr(), (half*)Y.data_ptr(),
-          col, row, batch, padded, row, stream);
+          (void*)W.const_data_ptr(), (void*)quant_X.const_data_ptr(),
+          (half*)Y.mutable_data_ptr(), col, row, batch, padded, row, stream);
       break;
   }
   return Y;

@@ -268,9 +268,9 @@ __global__ void gptq_marlin_repack_kernel(
               b_q_weight_ptr, perm_ptr, out_ptr, size_k, size_n);             \
     }
 
-torch::Tensor gptq_marlin_repack(torch::Tensor& b_q_weight, torch::Tensor& perm,
-                                 int64_t size_k, int64_t size_n,
-                                 int64_t num_bits) {
+torch::Tensor gptq_marlin_repack(torch::Tensor const& b_q_weight,
+                                 torch::Tensor const& perm, int64_t size_k,
+                                 int64_t size_n, int64_t num_bits) {
   // Verify compatibility with marlin tile of 16x64
   TORCH_CHECK(size_k % marlin::tile_k_size == 0, "size_k = ", size_k,
               " is not divisible by tile_k_size = ", marlin::tile_k_size);
@@ -312,9 +312,10 @@ torch::Tensor gptq_marlin_repack(torch::Tensor& b_q_weight, torch::Tensor& perm,
 
   // Get ptrs
   uint32_t const* b_q_weight_ptr =
-      reinterpret_cast<uint32_t const*>(b_q_weight.data_ptr());
-  uint32_t const* perm_ptr = reinterpret_cast<uint32_t const*>(perm.data_ptr());
-  uint32_t* out_ptr = reinterpret_cast<uint32_t*>(out.data_ptr());
+      reinterpret_cast<uint32_t const*>(b_q_weight.const_data_ptr());
+  uint32_t const* perm_ptr =
+      reinterpret_cast<uint32_t const*>(perm.const_data_ptr());
+  uint32_t* out_ptr = reinterpret_cast<uint32_t*>(out.mutable_data_ptr());
 
   // Get dev info
   int dev = b_q_weight.get_device();

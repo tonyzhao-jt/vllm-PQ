@@ -21,7 +21,7 @@
 typedef __hip_bfloat16 __nv_bfloat16;
 #endif
 
-void swap_blocks(torch::Tensor& src, torch::Tensor& dst,
+void swap_blocks(torch::Tensor const& src, torch::Tensor& dst,
                  const torch::Tensor& block_mapping) {
   torch::Device src_device = src.device();
   torch::Device dst_device = dst.device();
@@ -43,8 +43,8 @@ void swap_blocks(torch::Tensor& src, torch::Tensor& dst,
   // synchronization.
   TORCH_CHECK(block_mapping.device().is_cpu(), "block_mapping must be on CPU");
 
-  char* src_ptr = static_cast<char*>(src.data_ptr());
-  char* dst_ptr = static_cast<char*>(dst.data_ptr());
+  auto src_ptr = static_cast<char const*>(src.const_data_ptr());
+  auto dst_ptr = static_cast<char*>(dst.mutable_data_ptr());
 
   const int64_t block_size_in_bytes = src.element_size() * src[0].numel();
   const at::cuda::OptionalCUDAGuard device_guard(
@@ -115,9 +115,9 @@ void copy_blocks(std::vector<torch::Tensor> const& key_caches,
   int64_t value_cache_ptrs[num_layers];
   for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
     key_cache_ptrs[layer_idx] =
-        reinterpret_cast<int64_t>(key_caches[layer_idx].data_ptr());
+        reinterpret_cast<int64_t>(key_caches[layer_idx].const_data_ptr());
     value_cache_ptrs[layer_idx] =
-        reinterpret_cast<int64_t>(value_caches[layer_idx].data_ptr());
+        reinterpret_cast<int64_t>(value_caches[layer_idx].const_data_ptr());
   }
 
   // block_mapping is a 2D tensor with shape (num_pairs, 2).
@@ -141,9 +141,9 @@ void copy_blocks(std::vector<torch::Tensor> const& key_caches,
   VLLM_DISPATCH_FLOATING_AND_BYTE_TYPES(
       key_caches[0].scalar_type(), "copy_blocks_kernel", ([&] {
         vllm::copy_blocks_kernel<scalar_t><<<grid, block, 0, stream>>>(
-            key_cache_ptrs_tensor.data_ptr<int64_t>(),
-            value_cache_ptrs_tensor.data_ptr<int64_t>(),
-            block_mapping.data_ptr<int64_t>(), numel_per_block);
+            key_cache_ptrs_tensor.mutable_data_ptr<int64_t>(),
+            value_cache_ptrs_tensor.mutable_data_ptr<int64_t>(),
+            block_mapping.const_data_ptr<int64_t>(), numel_per_block);
       }));
 }
 
@@ -250,26 +250,26 @@ __global__ void reshape_and_cache_flash_kernel(
 // KV_T is the stored data type of kv-cache.
 // CACHE_T is the data type of key and value tensors.
 // KV_DTYPE is the real data type of kv-cache.
-#define CALL_RESHAPE_AND_CACHE(KV_T, CACHE_T, KV_DTYPE)               \
-  vllm::reshape_and_cache_kernel<KV_T, CACHE_T, KV_DTYPE>             \
-      <<<grid, block, 0, stream>>>(                                   \
-          reinterpret_cast<KV_T*>(key.data_ptr()),                    \
-          reinterpret_cast<KV_T*>(value.data_ptr()),                  \
-          reinterpret_cast<CACHE_T*>(key_cache.data_ptr()),           \
-          reinterpret_cast<CACHE_T*>(value_cache.data_ptr()),         \
-          slot_mapping.data_ptr<int64_t>(), key_stride, value_stride, \
+#define CALL_RESHAPE_AND_CACHE(KV_T, CACHE_T, KV_DTYPE)                     \
+  vllm::reshape_and_cache_kernel<KV_T, CACHE_T, KV_DTYPE>                   \
+      <<<grid, block, 0, stream>>>(                                         \
+          reinterpret_cast<KV_T const*>(key.const_data_ptr()),              \
+          reinterpret_cast<KV_T const*>(value.const_data_ptr()),            \
+          reinterpret_cast<CACHE_T*>(key_cache.mutable_data_ptr()),         \
+          reinterpret_cast<CACHE_T*>(value_cache.mutable_data_ptr()),       \
+          slot_mapping.const_data_ptr<int64_t>(), key_stride, value_stride, \
           num_heads, head_size, block_size, x, k_scale, v_scale);
 
+// clang-format off
 void reshape_and_cache(
-    torch::Tensor& key,    // [num_tokens, num_heads, head_size]
-    torch::Tensor& value,  // [num_tokens, num_heads, head_size]
-    torch::Tensor&
-        key_cache,  // [num_blocks, num_heads, head_size/x, block_size, x]
-    torch::Tensor&
-        value_cache,  // [num_blocks, num_heads, head_size, block_size]
-    torch::Tensor& slot_mapping,  // [num_tokens]
-    const std::string& kv_cache_dtype, const double k_scale,
-    const double v_scale) {
+    torch::Tensor const& key,    // [num_tokens, num_heads, head_size]
+    torch::Tensor const& value,  // [num_tokens, num_heads, head_size]
+    torch::Tensor& key_cache,    // [num_blocks, num_heads, head_size/x, block_size, x]
+    torch::Tensor& value_cache,  // [num_blocks, num_heads, head_size, block_size]
+    torch::Tensor const& slot_mapping,  // [num_tokens]
+    std::string const& kv_cache_dtype, double const k_scale,
+    double const v_scale) {
+// clang-format on 
   int num_tokens = key.size(0);
   int num_heads = key.size(1);
   int head_size = key.size(2);
@@ -291,25 +291,26 @@ void reshape_and_cache(
 // KV_T is the stored data type of kv-cache.
 // CACHE_T is the data type of key and value tensors.
 // KV_DTYPE is the real data type of kv-cache.
-#define CALL_RESHAPE_AND_CACHE_FLASH(KV_T, CACHE_T, KV_DTYPE)         \
-  vllm::reshape_and_cache_flash_kernel<KV_T, CACHE_T, KV_DTYPE>       \
-      <<<grid, block, 0, stream>>>(                                   \
-          reinterpret_cast<KV_T*>(key.data_ptr()),                    \
-          reinterpret_cast<KV_T*>(value.data_ptr()),                  \
-          reinterpret_cast<CACHE_T*>(key_cache.data_ptr()),           \
-          reinterpret_cast<CACHE_T*>(value_cache.data_ptr()),         \
-          slot_mapping.data_ptr<int64_t>(), block_stride, key_stride, \
+#define CALL_RESHAPE_AND_CACHE_FLASH(KV_T, CACHE_T, KV_DTYPE)               \
+  vllm::reshape_and_cache_flash_kernel<KV_T, CACHE_T, KV_DTYPE>             \
+      <<<grid, block, 0, stream>>>(                                         \
+          reinterpret_cast<KV_T const*>(key.const_data_ptr()),              \
+          reinterpret_cast<KV_T const*>(value.const_data_ptr()),            \
+          reinterpret_cast<CACHE_T*>(key_cache.mutable_data_ptr()),         \
+          reinterpret_cast<CACHE_T*>(value_cache.mutable_data_ptr()),       \
+          slot_mapping.const_data_ptr<int64_t>(), block_stride, key_stride, \
           value_stride, num_heads, head_size, block_size, k_scale, v_scale);
 
+// clang-format off
 void reshape_and_cache_flash(
-    torch::Tensor& key,        // [num_tokens, num_heads, head_size]
-    torch::Tensor& value,      // [num_tokens, num_heads, head_size]
-    torch::Tensor& key_cache,  // [num_blocks, block_size, num_heads, head_size]
-    torch::Tensor&
-        value_cache,  // [num_blocks, block_size, num_heads, head_size]
-    torch::Tensor& slot_mapping,  // [num_tokens]
-    const std::string& kv_cache_dtype, const double k_scale,
-    const double v_scale) {
+    torch::Tensor const& key,    // [num_tokens, num_heads, head_size]
+    torch::Tensor const& value,  // [num_tokens, num_heads, head_size]
+    torch::Tensor& key_cache,    // [num_blocks, block_size, num_heads, head_size]
+    torch::Tensor& value_cache,  // [num_blocks, block_size, num_heads, head_size]
+    torch::Tensor const& slot_mapping,  // [num_tokens]
+    std::string const& kv_cache_dtype, double const k_scale,
+    double const v_scale) {
+  // clang-format on
   int num_tokens = key.size(0);
   int num_heads = key.size(1);
   int head_size = key.size(2);
@@ -348,12 +349,13 @@ __global__ void convert_fp8_kernel(const Tin* __restrict__ src_cache,
 
 #define CALL_CONVERT_FP8(Tout, Tin, KV_DTYPE)                                \
   vllm::convert_fp8_kernel<Tout, Tin, KV_DTYPE><<<grid, block, 0, stream>>>( \
-      reinterpret_cast<Tin*>(src_cache.data_ptr()),                          \
-      reinterpret_cast<Tout*>(dst_cache.data_ptr()), scale, block_stride);
+      reinterpret_cast<Tin const*>(src_cache.const_data_ptr()),              \
+      reinterpret_cast<Tout*>(dst_cache.mutable_data_ptr()), scale,          \
+      block_stride);
 
 // Only for testing.
-void convert_fp8(torch::Tensor& dst_cache, torch::Tensor& src_cache,
-                 const double scale, const std::string& kv_cache_dtype) {
+void convert_fp8(torch::Tensor& dst_cache, torch::Tensor const& src_cache,
+                 double const scale, std::string const& kv_cache_dtype) {
   torch::Device src_device = src_cache.device();
   torch::Device dst_device = dst_cache.device();
   TORCH_CHECK(src_device.is_cuda(), "src must be on a GPU")
