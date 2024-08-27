@@ -10,6 +10,9 @@ from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
+from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import CompressedTensorsConfig
+from vllm.model_executor.layers.quantization.compressed_tensors.utils import CompressionFormat, QuantizationStrategy
+from vllm.model_executor.layers.quantization.utils.w8a8_utils import create_per_channel_scale_param
 from vllm.model_executor.utils import set_weight_attrs
 
 logger = init_logger(__name__)
@@ -129,6 +132,141 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                          renormalize=renormalize)
 
 
+class W8A8QuantizedFusedMoEMethod(FusedMoEMethodBase):
+    """MoE method W8A8 quantization. This class is for compressed-tensors format loading"""
+
+    def create_weights(self, layer: torch.nn.Module, num_experts: int,
+                       hidden_size: int, intermediate_size: int,
+                       params_dtype: torch.dtype, **extra_weight_attrs):
+        self.strategy = extra_weight_attrs['quant_config'].target_scheme_map['Linear']['weights'].strategy
+        self.is_static_input_scheme = not extra_weight_attrs['quant_config'].target_scheme_map['Linear']['input_activations'].dynamic
+        assert self.is_static_input_scheme, "W8A8 int quantization only support static input activation for now"
+
+        self.quant_config = extra_weight_attrs["quant_config"]
+        self.weight_loader = extra_weight_attrs["weight_loader"]
+
+        self.logical_widths_13 = [intermediate_size * 2]
+        self.logical_widths_2 = [intermediate_size * 2]
+        # Fused gate_up_proj (column parallel)
+        w13_weight = torch.nn.Parameter(torch.empty(num_experts,
+                                                    2 * intermediate_size,
+                                                    hidden_size,
+                                                    dtype=torch.int8),
+                                        requires_grad=False)
+        layer.register_parameter("w13_weight", w13_weight)
+        set_weight_attrs(w13_weight, {
+            "input_dim": 1,
+            "output_dim": 0,
+            "weight_loader": self.weight_loader,
+        })
+        # WEIGHT SCALE
+        layer_kwargs = {"weight_loader": self.weight_loader}
+        if self.strategy == QuantizationStrategy.CHANNEL:
+            scale = torch.nn.Parameter(torch.empty((num_experts, intermediate_size * 2, 1),
+                                        dtype=torch.float32),
+                            requires_grad=False)
+            scale[:] = torch.finfo(torch.float32).min
+            set_weight_attrs(scale, {"input_dim": 1, "output_dim": 0, **layer_kwargs})
+        else:
+            assert self.strategy == QuantizationStrategy.TENSOR
+            scale = torch.nn.Parameter(torch.empty((num_experts, 2), dtype=torch.float32),
+                                       requires_grad=False)
+            scale[:] = torch.finfo(torch.float32).min
+            set_weight_attrs(scale, {
+                "needs_scalar_to_array": True,
+                **layer_kwargs
+            })
+        set_weight_attrs(scale, {"is_int8_weight_scale": True})
+        layer.register_parameter("w13_weight_scale", scale)
+
+
+        # INPUT SCALE
+        if self.is_static_input_scheme:
+            scale = torch.nn.Parameter(torch.ones(num_experts,
+                                                  dtype=torch.float32),
+                                       requires_grad=False)
+            set_weight_attrs(scale, {
+                "needs_scalar_to_array": True,
+                **layer_kwargs
+            })
+            set_weight_attrs(scale, {"is_int8_input_scale": True})
+            layer.register_parameter("w13_input_scale", scale)
+
+
+        # down_proj (row parallel)
+        w2_weight = torch.nn.Parameter(torch.empty(num_experts,
+                                                   hidden_size,
+                                                   intermediate_size,
+                                                   dtype=torch.int8),
+                                       requires_grad=False)
+        layer.register_parameter("w2_weight", w2_weight)
+
+        set_weight_attrs(w2_weight, {
+            "input_dim": 1,
+            "output_dim": 0,
+            "weight_loader": self.weight_loader,
+        })
+
+        # WEIGHT SCALE
+        if self.strategy == QuantizationStrategy.CHANNEL:
+            scale = torch.nn.Parameter(torch.empty((num_experts, hidden_size, 1),
+                                        dtype=torch.float32),
+                            requires_grad=False)
+            scale[:] = torch.finfo(torch.float32).min
+            set_weight_attrs(scale, {"input_dim": 0, "output_dim": 1, **layer_kwargs})
+
+        else:
+            assert self.strategy == QuantizationStrategy.TENSOR
+            scale = torch.nn.Parameter(torch.ones(num_experts,
+                                                  dtype=torch.float32),
+                                       requires_grad=False)
+            set_weight_attrs(scale, {
+                "needs_scalar_to_array": True,
+                **layer_kwargs
+            })
+        set_weight_attrs(scale, {"is_int8_weight_scale": True})
+        layer.register_parameter("w2_weight_scale", scale)
+
+        # INPUT SCALE
+        if self.is_static_input_scheme:
+            scale = torch.nn.Parameter(torch.ones(num_experts,
+                                                  dtype=torch.float32),
+                                       requires_grad=False)
+            set_weight_attrs(scale, {
+                "needs_scalar_to_array": True,
+                **layer_kwargs
+            })
+            set_weight_attrs(scale, {"is_int8_input_scale": True})
+            layer.register_parameter("w2_input_scale", scale)
+
+    def apply(self,
+              layer: torch.nn.Module,
+              x: torch.Tensor,
+              router_logits: torch.Tensor,
+              top_k: int,
+              renormalize: bool = True,
+              use_grouped_topk: bool = False,
+              num_expert_group: Optional[int] = None,
+              topk_group: Optional[int] = None) -> torch.Tensor:
+        from vllm.model_executor.layers.fused_moe.fused_moe import fused_moe
+        return fused_moe(x,
+                         layer.w13_weight,
+                         layer.w2_weight,
+                         router_logits,
+                         top_k,
+                         renormalize=renormalize,
+                         inplace=True,
+                         use_grouped_topk=use_grouped_topk,
+                         num_expert_group=num_expert_group,
+                         topk_group=topk_group,
+                         use_int8_w8a8=True,
+                         w1_scale=layer.w13_weight_scale,
+                         w2_scale=layer.w2_weight_scale,
+                         a1_scale=layer.w13_input_scale,
+                         a2_scale=layer.w2_input_scale)
+
+
+
 class FusedMoE(torch.nn.Module):
     """FusedMoE layer for MoE models.
 
@@ -183,10 +321,15 @@ class FusedMoE(torch.nn.Module):
             assert num_expert_group is not None and topk_group is not None
         self.num_expert_group = num_expert_group
         self.topk_group = topk_group
-
         if quant_config is None:
             self.quant_method: Optional[QuantizeMethodBase] = (
                 UnquantizedFusedMoEMethod())
+        elif (isinstance(quant_config, CompressedTensorsConfig)
+         and quant_config.quant_format == CompressionFormat.int_quantized.value
+         and quant_config.target_scheme_map['Linear']['input_activations'].num_bits == 8
+         and quant_config.target_scheme_map['Linear']['weights'].num_bits == 8):
+            self.quant_method: Optional[QuantizeMethodBase] = (
+                    W8A8QuantizedFusedMoEMethod())
         else:
             self.quant_method = quant_config.get_quant_method(self, prefix)
         assert self.quant_method is not None
@@ -197,7 +340,8 @@ class FusedMoE(torch.nn.Module):
             hidden_size=hidden_size,
             intermediate_size=self.intermediate_size_per_partition,
             params_dtype=params_dtype,
-            weight_loader=self.weight_loader)
+            weight_loader=self.weight_loader,
+            quant_config=quant_config)
 
     def weight_loader(self, param: torch.nn.Parameter,
                       loaded_weight: torch.Tensor, weight_name: str,
@@ -209,6 +353,10 @@ class FusedMoE(torch.nn.Module):
         # Special case for fp8 scales.
         if getattr(param, "is_fp8_scale", False):
             self._load_fp8_scale(param.data, loaded_weight, weight_name,
+                                 shard_id, expert_id)
+            return
+        elif getattr(param, "is_int8_input_scale", False):
+            self._load_int8_input_scale(param.data, loaded_weight,
                                  shard_id, expert_id)
             return
 
@@ -230,9 +378,13 @@ class FusedMoE(torch.nn.Module):
         elif shard_id in ("w1", "w3"):
             shard_dim = output_dim
             shard_size = expert_data.shape[output_dim] // 2
-        offset = shard_size * tp_rank
-        loaded_weight = loaded_weight.narrow(shard_dim, offset, shard_size)
+        
+        if  getattr(param, "is_int8_weight_scale", False) and shard_id == "w2":
+            offset = 0
+        else:
+            offset = shard_size * tp_rank
 
+        loaded_weight = loaded_weight.narrow(shard_dim, offset, shard_size)
         # Narrow parameter and load.
         # w1, gate_proj: Load into first logical weight of w13.
         if shard_id == "w1":
@@ -243,7 +395,7 @@ class FusedMoE(torch.nn.Module):
             expert_data = expert_data.narrow(shard_dim, shard_size, shard_size)
             expert_data.copy_(loaded_weight)
         # w2, down_proj: Load into only logical weight of w2.
-        elif shard_id == "w2":
+        elif shard_id == "w2":                    
             expert_data.copy_(loaded_weight)
         else:
             raise ValueError(
@@ -343,3 +495,17 @@ class FusedMoE(torch.nn.Module):
             # If we are in the row parallel case (down_proj)
             else:
                 param_data[expert_id] = loaded_weight
+
+
+    def _load_int8_input_scale(self, param: torch.nn.Parameter,
+                               loaded_weight: torch.Tensor,
+                               shard_id: str, expert_id: int) -> None:
+        param_data = param.data
+        # Input scales can be loaded directly and should be equal.
+        if param_data[expert_id] != 1 and (param_data[expert_id].to(loaded_weight.device) -
+                                            loaded_weight).abs() > 1e-5:
+            raise ValueError(
+                "input_scales of w1 and w3 of a layer "
+                f"must be equal. But got {param_data[expert_id]} "
+                f"vs. {loaded_weight}")
+        param_data[expert_id] = loaded_weight
