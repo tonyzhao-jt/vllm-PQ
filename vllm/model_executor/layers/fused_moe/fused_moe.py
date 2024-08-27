@@ -456,6 +456,7 @@ def get_config_dtype_str(dtype: torch.dtype,
 
 
 def fused_experts(hidden_states: torch.Tensor,
+                  stream: torch.cuda.Stream,
                   w1: torch.Tensor,
                   w2: torch.Tensor,
                   topk_weights: torch.Tensor,
@@ -468,6 +469,8 @@ def fused_experts(hidden_states: torch.Tensor,
                   w2_scale: Optional[torch.Tensor] = None,
                   a1_scale: Optional[torch.Tensor] = None,
                   a2_scale: Optional[torch.Tensor] = None):
+
+    stream.synchronize()
     # Check constraints.
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
@@ -592,6 +595,7 @@ def fused_moe(
     gating_output: torch.Tensor,
     topk: int,
     renormalize: bool,
+    stream: torch.cuda.Stream,
     inplace: bool = False,
     override_config: Optional[Dict[str, Any]] = None,
     use_grouped_topk: bool = False,
@@ -647,6 +651,8 @@ def fused_moe(
     else:
         topk_weights, topk_ids = fused_topk(hidden_states, gating_output, topk,
                                             renormalize)
+
+    stream.synchronize()
 
     return fused_experts(hidden_states,
                          w1,

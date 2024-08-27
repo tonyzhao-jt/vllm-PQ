@@ -26,6 +26,7 @@ class FusedMoEMethodBase(QuantizeMethodBase):
     @abstractmethod
     def apply(self, layer: torch.nn.Module, x: torch.Tensor,
               router_logits: torch.Tensor, top_k: int, renormalize: bool,
+              stream:torch.cuda.Stream,
               use_grouped_topk: bool) -> torch.Tensor:
         raise NotImplementedError
 
@@ -41,7 +42,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         w13_weight = torch.nn.Parameter(torch.empty(num_experts,
                                                     2 * intermediate_size,
                                                     hidden_size,
-                                                    dtype=params_dtype),
+                                                    dtype=params_dtype,
+                                                    device='cpu'),
                                         requires_grad=False)
         layer.register_parameter("w13_weight", w13_weight)
         set_weight_attrs(w13_weight, extra_weight_attrs)
@@ -50,7 +52,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         w2_weight = torch.nn.Parameter(torch.empty(num_experts,
                                                    hidden_size,
                                                    intermediate_size,
-                                                   dtype=params_dtype),
+                                                   dtype=params_dtype,
+                                                   device='cpu'),
                                        requires_grad=False)
         layer.register_parameter("w2_weight", w2_weight)
         set_weight_attrs(w2_weight, extra_weight_attrs)
@@ -60,12 +63,18 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
               x: torch.Tensor,
               router_logits: torch.Tensor,
               top_k: int,
+              stream: torch.cuda.Stream,
               renormalize: bool,
               use_grouped_topk: bool,
               topk_group: Optional[int] = None,
               num_expert_group: Optional[int] = None) -> torch.Tensor:
+        w13_weight = torch.nn.Parameter(layer.w13_weight.to('cuda'))
+        w2_weight = torch.nn.Parameter(layer.w2_weight.to('cuda'))
 
         return self.forward(x=x,
+                            w1=w13_weight,
+                            w2=w2_weight,
+                            stream=stream,
                             layer=layer,
                             router_logits=router_logits,
                             top_k=top_k,
@@ -77,6 +86,9 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
     def forward_cuda(self,
                      layer: torch.nn.Module,
                      x: torch.Tensor,
+                     w1: torch.Tensor,
+                     w2: torch.Tensor,
+                     stream: torch.cuda.Stream,
                      use_grouped_topk: bool,
                      top_k: int,
                      router_logits: torch.Tensor,
@@ -97,8 +109,9 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             num_expert_group=num_expert_group)
 
         return fused_experts(hidden_states=x,
-                             w1=layer.w13_weight,
-                             w2=layer.w2_weight,
+                             w1=w1,
+                             w2=w2,
+                             stream=stream,
                              topk_weights=topk_weights,
                              topk_ids=topk_ids,
                              inplace=True)
@@ -168,6 +181,8 @@ class FusedMoE(torch.nn.Module):
     ):
         super().__init__()
 
+        self.w1_gpu = None
+        self.w2_gpu = None
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
 
@@ -179,6 +194,7 @@ class FusedMoE(torch.nn.Module):
         self.reduce_results = reduce_results
         self.renormalize = renormalize
         self.use_grouped_topk = use_grouped_topk
+        self.stream = torch.cuda.Stream()
         if self.use_grouped_topk:
             assert num_expert_group is not None and topk_group is not None
         self.num_expert_group = num_expert_group
@@ -198,6 +214,15 @@ class FusedMoE(torch.nn.Module):
             intermediate_size=self.intermediate_size_per_partition,
             params_dtype=params_dtype,
             weight_loader=self.weight_loader)
+
+    def load_experts_to_gpu_nonblocking(self):
+        if self.w2_weight is None or self.w13_weight is None:
+            raise ValueError("Weights in MoE layer have not been loaded to CPU yet. Can't transfer data to GPU")
+        self.w2_weight.pin_memory()
+        self.w13_weight.pin_memory()
+        with torch.cuda.stream(self.stream):
+            self.w1_gpu = torch.nn.Parameter(self.w2_weight.to('cuda', non_blocking=True))
+            self.w2_gpu = torch.nn.Parameter(self.w13_weight.to('cuda', non_blocking=True))
 
     def weight_loader(self, param: torch.nn.Parameter,
                       loaded_weight: torch.Tensor, weight_name: str,
@@ -288,11 +313,19 @@ class FusedMoE(torch.nn.Module):
             layer=self,
             x=hidden_states,
             router_logits=router_logits,
+            stream=self.stream,
             top_k=self.top_k,
             renormalize=self.renormalize,
             use_grouped_topk=self.use_grouped_topk,
             topk_group=self.topk_group,
             num_expert_group=self.num_expert_group)
+
+        # Note: This will not immediately delete the tensors from GPU memory
+        # The pyTorch garbage collector will only run when the GPU starts to run out
+        # of memory. We can change this by calling clear_cache() after the deletions.
+        del self.w2_gpu
+        del self.w1_gpu
+        torch.cuda.empty_cache()
 
         if self.reduce_results and self.tp_size > 1:
             final_hidden_states = tensor_model_parallel_all_reduce(
