@@ -8,10 +8,10 @@ from typing import (TYPE_CHECKING, Dict, List, Mapping, Optional, Tuple, Type,
 import torch
 
 import vllm.envs as envs
-from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
-                         EngineConfig, LoadConfig, LoadFormat, LoRAConfig,
-                         ModelConfig, ObservabilityConfig, ParallelConfig,
-                         PromptAdapterConfig, SchedulerConfig,
+from vllm.config import (CacheConfig, ControlVectorConfig, DecodingConfig,
+                         DeviceConfig, EngineConfig, LoadConfig, LoadFormat,
+                         LoRAConfig, ModelConfig, ObservabilityConfig,
+                         ParallelConfig, PromptAdapterConfig, SchedulerConfig,
                          SpeculativeConfig, TokenizerPoolConfig)
 from vllm.executor.executor_base import ExecutorBase
 from vllm.logger import init_logger
@@ -113,6 +113,10 @@ class EngineArgs:
     enable_prompt_adapter: bool = False
     max_prompt_adapters: int = 1
     max_prompt_adapter_token: int = 0
+    enable_control_vector: bool = False
+    max_control_vectors: int = 1
+    normalize_control_vector: bool = False
+
     fully_sharded_loras: bool = False
     lora_extra_vocab_size: int = 256
     long_lora_scaling_factors: Optional[Tuple[float]] = None
@@ -541,6 +545,17 @@ class EngineArgs:
                             type=int,
                             default=EngineArgs.max_prompt_adapter_token,
                             help='Max number of PromptAdapters tokens')
+        parser.add_argument('--enable-control-vector',
+                            action='store_true',
+                            help='If True, enable handling of ControlVectors.')
+        parser.add_argument('--max-control-vectors',
+                            type=int,
+                            default=EngineArgs.max_control_vectors,
+                            help='Max number of Control Vectors in a batch.')
+        parser.add_argument('--normalize-control-vector',
+                            type=bool,
+                            default=EngineArgs.normalize_control_vector,
+                            help='Enable normalization of control vector')
         parser.add_argument("--device",
                             type=str,
                             default=EngineArgs.device,
@@ -957,6 +972,11 @@ class EngineArgs:
             max_prompt_adapter_token=self.max_prompt_adapter_token) \
                                         if self.enable_prompt_adapter else None
 
+        control_vector_config = ControlVectorConfig(
+            max_control_vectors=self.max_control_vectors,
+            normalize=self.normalize_control_vector,
+        ) if self.enable_control_vector else None
+
         decoding_config = DecodingConfig(
             guided_decoding_backend=self.guided_decoding_backend)
 
@@ -983,19 +1003,18 @@ class EngineArgs:
                 "Chunked prefill is not supported with sliding window. "
                 "Set --disable-sliding-window to disable sliding window.")
 
-        return EngineConfig(
-            model_config=model_config,
-            cache_config=cache_config,
-            parallel_config=parallel_config,
-            scheduler_config=scheduler_config,
-            device_config=device_config,
-            lora_config=lora_config,
-            speculative_config=speculative_config,
-            load_config=load_config,
-            decoding_config=decoding_config,
-            observability_config=observability_config,
-            prompt_adapter_config=prompt_adapter_config,
-        )
+        return EngineConfig(model_config=model_config,
+                            cache_config=cache_config,
+                            parallel_config=parallel_config,
+                            scheduler_config=scheduler_config,
+                            device_config=device_config,
+                            lora_config=lora_config,
+                            speculative_config=speculative_config,
+                            load_config=load_config,
+                            decoding_config=decoding_config,
+                            observability_config=observability_config,
+                            prompt_adapter_config=prompt_adapter_config,
+                            control_vector_config=control_vector_config)
 
 
 @dataclass

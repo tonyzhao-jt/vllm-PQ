@@ -11,6 +11,7 @@ from typing import (TYPE_CHECKING, Any, Callable, Dict, List, Mapping,
 import msgspec
 import torch
 
+from vllm.control_vectors.request import ControlVectorRequest
 from vllm.inputs.parse import is_valid_encoder_decoder_llm_inputs
 from vllm.lora.request import LoRARequest
 from vllm.pooling_params import PoolingParams
@@ -595,6 +596,7 @@ class SequenceGroup:
         encoder_seq: Optional[Sequence] = None,
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
+        control_vector_request: Optional[ControlVectorRequest] = None,
     ) -> None:
         self.request_id = request_id
         self.seqs = seqs
@@ -613,6 +615,7 @@ class SequenceGroup:
         self.embeddings = embeddings
         self.pooling_params = pooling_params
         self.prompt_adapter_request = prompt_adapter_request
+        self.control_vector_request = control_vector_request
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
 
@@ -900,6 +903,7 @@ class SequenceGroupMetadata(
     encoder_seq_data: Optional[SequenceData] = None
     cross_block_table: Optional[List[int]] = None
     prompt_adapter_request: Optional[PromptAdapterRequest] = None
+    control_vector_request: Optional[ControlVectorRequest] = None
     token_chunk_size: Optional[int] = None
 
     ### Stateful fields that are lazily defined. ###
@@ -930,6 +934,11 @@ class SequenceGroupMetadata(
     def prompt_adapter_num_virtual_tokens(self) -> int:
         return self.prompt_adapter_request.prompt_adapter_num_virtual_tokens \
                         if self.prompt_adapter_request else 0
+
+    @property
+    def control_vector_id(self) -> int:
+        return self.control_vector_request.adapter_id \
+            if self.control_vector_request else 0
 
     def apply_delta(self,
                     sequence_group_metadata_delta: SequenceGroupMetadataDelta):

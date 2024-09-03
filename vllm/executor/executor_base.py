@@ -1,10 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional, Set, Tuple
 
-from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
-                         ModelConfig, ObservabilityConfig, ParallelConfig,
+from vllm.config import (CacheConfig, ControlVectorConfig, DeviceConfig,
+                         LoadConfig, LoRAConfig, ModelConfig,
+                         ObservabilityConfig, ParallelConfig,
                          PromptAdapterConfig, SchedulerConfig,
                          SpeculativeConfig)
+from vllm.control_vectors.request import ControlVectorRequest
 from vllm.lora.request import LoRARequest
 from vllm.model_executor.layers.sampler import SamplerOutput
 from vllm.prompt_adapter.request import PromptAdapterRequest
@@ -21,19 +23,15 @@ class ExecutorBase(ABC):
 
     uses_ray: bool  # whether the executor uses Ray for orchestration.
 
-    def __init__(
-        self,
-        model_config: ModelConfig,
-        cache_config: CacheConfig,
-        parallel_config: ParallelConfig,
-        scheduler_config: SchedulerConfig,
-        device_config: DeviceConfig,
-        load_config: LoadConfig,
-        lora_config: Optional[LoRAConfig],
-        speculative_config: Optional[SpeculativeConfig],
-        prompt_adapter_config: Optional[PromptAdapterConfig],
-        observability_config: Optional[ObservabilityConfig],
-    ) -> None:
+    def __init__(self, model_config: ModelConfig, cache_config: CacheConfig,
+                 parallel_config: ParallelConfig,
+                 scheduler_config: SchedulerConfig,
+                 device_config: DeviceConfig, load_config: LoadConfig,
+                 lora_config: Optional[LoRAConfig],
+                 speculative_config: Optional[SpeculativeConfig],
+                 prompt_adapter_config: Optional[PromptAdapterConfig],
+                 control_vector_config: Optional[ControlVectorConfig],
+                 observability_config: Optional[ObservabilityConfig]) -> None:
         self.model_config = model_config
         self.cache_config = cache_config
         self.lora_config = lora_config
@@ -43,6 +41,7 @@ class ExecutorBase(ABC):
         self.device_config = device_config
         self.speculative_config = speculative_config
         self.prompt_adapter_config = prompt_adapter_config
+        self.control_vector_config = control_vector_config
         self.observability_config = observability_config
         self._init_executor()
 
@@ -115,6 +114,15 @@ class ExecutorBase(ABC):
 
     @abstractmethod
     def list_prompt_adapters(self) -> Set[int]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_control_vector(
+            self, control_vector_request: ControlVectorRequest) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def remove_control_vector(self, cv_id: int) -> bool:
         raise NotImplementedError
 
     @abstractmethod

@@ -7,10 +7,12 @@ import torch
 import torch.distributed
 
 import vllm.envs as envs
-from vllm.config import (CacheConfig, DeviceConfig, LoadConfig, LoRAConfig,
-                         ModelConfig, ObservabilityConfig, ParallelConfig,
+from vllm.config import (CacheConfig, ControlVectorConfig, DeviceConfig,
+                         LoadConfig, LoRAConfig, ModelConfig,
+                         ObservabilityConfig, ParallelConfig,
                          PromptAdapterConfig, SchedulerConfig,
                          SpeculativeConfig)
+from vllm.control_vectors.request import ControlVectorRequest
 from vllm.distributed import (ensure_model_parallel_initialized,
                               init_distributed_environment,
                               set_custom_all_reduce)
@@ -54,6 +56,7 @@ class Worker(LocalOrDistributedWorkerBase):
         lora_config: Optional[LoRAConfig] = None,
         speculative_config: Optional[SpeculativeConfig] = None,
         prompt_adapter_config: Optional[PromptAdapterConfig] = None,
+        control_vector_config: Optional[ControlVectorConfig] = None,
         is_driver_worker: bool = False,
         model_runner_cls: Optional[Type[GPUModelRunnerBase]] = None,
         observability_config: Optional[ObservabilityConfig] = None,
@@ -70,6 +73,7 @@ class Worker(LocalOrDistributedWorkerBase):
         self.lora_config = lora_config
         self.load_config = load_config
         self.prompt_adapter_config = prompt_adapter_config
+        self.control_vector_config = control_vector_config
         self.is_driver_worker = is_driver_worker
         if parallel_config and is_driver_worker:
             assert rank % parallel_config.tensor_parallel_size == 0, \
@@ -107,6 +111,7 @@ class Worker(LocalOrDistributedWorkerBase):
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
             prompt_adapter_config=prompt_adapter_config,
+            control_vector_config=control_vector_config,
             observability_config=observability_config,
             **speculative_args,
         )
@@ -418,6 +423,13 @@ class Worker(LocalOrDistributedWorkerBase):
 
     def list_prompt_adapters(self) -> Set[int]:
         return self.model_runner.list_prompt_adapters()
+
+    def add_control_vector(
+            self, control_vector_request: ControlVectorRequest) -> bool:
+        return self.model_runner.add_control_vector(control_vector_request)
+
+    def remove_control_vector(self, cv_id: int) -> bool:
+        return self.model_runner.remove_control_vector(cv_id)
 
     @property
     def max_model_len(self) -> int:
