@@ -1,5 +1,6 @@
 from contextlib import contextmanager
-from typing import ClassVar, List, Optional, Sequence, Union, cast, overload
+from typing import (ClassVar, Iterator, List, Optional, Sequence, Union, cast,
+                    overload)
 
 from tqdm import tqdm
 
@@ -193,6 +194,19 @@ class LLM:
         else:
             tokenizer_group.tokenizer = get_cached_tokenizer(tokenizer)
 
+    def _run_stream_engine(self) -> Iterator[RequestOutput]:
+        """Executes a streaming engine that yields outputs from 
+        unfinished LLM requests.
+
+        Yields:
+            - Iterator[RequestOutput]: An iterator that produces 
+            outputs from the LLM engine as they become available.
+        """
+        while self.llm_engine.has_unfinished_requests():
+            step_outputs = self.llm_engine.step()
+            for output in step_outputs:
+                yield output
+
     @overload  # LEGACY: single (prompt + optional token ids)
     def generate(
         self,
@@ -202,6 +216,7 @@ class LLM:
         prompt_token_ids: Optional[List[int]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        stream: bool = False,
     ) -> List[RequestOutput]:
         ...
 
@@ -214,6 +229,7 @@ class LLM:
         prompt_token_ids: Optional[List[List[int]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        stream: bool = False,
     ) -> List[RequestOutput]:
         ...
 
@@ -227,6 +243,7 @@ class LLM:
         prompt_token_ids: List[int],
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        stream: bool = False,
     ) -> List[RequestOutput]:
         ...
 
@@ -240,6 +257,7 @@ class LLM:
         prompt_token_ids: List[List[int]],
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        stream: bool = False,
     ) -> List[RequestOutput]:
         ...
 
@@ -251,6 +269,7 @@ class LLM:
         prompt_token_ids: Union[List[int], List[List[int]]],
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        stream: bool = False,
     ) -> List[RequestOutput]:
         ...
 
@@ -264,6 +283,7 @@ class LLM:
                                         Sequence[SamplingParams]]] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
+        stream: bool = False,
     ) -> List[RequestOutput]:
         ...
 
@@ -284,8 +304,9 @@ class LLM:
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         guided_options_request: Optional[Union[LLMGuidedOptions,
-                                               GuidedDecodingRequest]] = None
-    ) -> List[RequestOutput]:
+                                               GuidedDecodingRequest]] = None,
+        stream: bool = False,
+    ) -> Union[List[RequestOutput], Iterator[RequestOutput]]:
         """Generates the completions for the input prompts.
 
         This class automatically batches the given prompts, considering
@@ -303,6 +324,7 @@ class LLM:
             lora_request: LoRA request to use for generation, if any.
             prompt_adapter_request: Prompt Adapter request to use for
                 generation, if any.
+            stream: Whether to stream the generated outputs.
 
         Returns:
             A list of ``RequestOutput`` objects containing the
@@ -345,8 +367,11 @@ class LLM:
             prompt_adapter_request=prompt_adapter_request,
             guided_options=guided_options_request)
 
-        outputs = self._run_engine(use_tqdm=use_tqdm)
-        return LLMEngine.validate_outputs(outputs, RequestOutput)
+        if stream:
+            return self._run_stream_engine()
+        else:
+            outputs = self._run_engine(use_tqdm=use_tqdm)
+            return LLMEngine.validate_outputs(outputs, RequestOutput)
 
     def chat(
         self,
@@ -684,7 +709,7 @@ class LLM:
                 decoding_config = self.llm_engine.get_decoding_config()
                 guided_options.guided_decoding_backend = (
                     decoding_config.guided_decoding_backend)
-            guided_logits_processor = get_local_guided_decoding_logits_processor(  #noqa
+            guided_logits_processor = get_local_guided_decoding_logits_processor(  # noqa
                 guided_options.guided_decoding_backend, guided_options,
                 self.get_tokenizer())
             if guided_logits_processor:
@@ -721,7 +746,8 @@ class LLM:
                             # Calculate tokens only for RequestOutput
                             assert output.prompt_token_ids is not None
                             total_in_toks += len(output.prompt_token_ids)
-                            in_spd = total_in_toks / pbar.format_dict["elapsed"]
+                            in_spd = total_in_toks / \
+                                pbar.format_dict["elapsed"]
                             total_out_toks += sum(
                                 len(stp.token_ids) for stp in output.outputs)
                             out_spd = (total_out_toks /
