@@ -3,6 +3,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
+from http import HTTPStatus
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Deque, Dict,
                     Iterable, List, Mapping, NamedTuple, Optional)
 from typing import Sequence as GenericSequence
@@ -73,6 +74,14 @@ def _load_generation_config_dict(model_config: ModelConfig) -> Dict[str, Any]:
 
 _G = TypeVar("_G", bound=BaseTokenizerGroup, default=BaseTokenizerGroup)
 _O = TypeVar("_O", RequestOutput, EmbeddingRequestOutput)
+
+
+class QueueOverflowError(ValueError):
+
+    def __init__(self,
+                 message="Current request would exceed the max queue length.",
+                 status_code=503):
+        super().__init__(message, status_code)
 
 
 @dataclass
@@ -672,6 +681,21 @@ class LLMEngine:
             for scheduler in self.scheduler
         ]
         min_cost_scheduler = self.scheduler[costs.index(min(costs))]
+
+        # Check if request would exceed max queue length of min_cost_scheduler
+        curr_queue_len = len(min_cost_scheduler.running) + len(
+            min_cost_scheduler.waiting)
+        max_queue_len = min_cost_scheduler.scheduler_config.max_queue_length
+        max_num_seqs = min_cost_scheduler.scheduler_config.max_num_seqs
+
+        if max_queue_len > -1 and \
+            curr_queue_len >= max_num_seqs + max_queue_len:
+            raise QueueOverflowError(
+                f"Request {request_id} would exceed the indicated maximum "
+                f"queue length of {max_queue_len}",
+                HTTPStatus.SERVICE_UNAVAILABLE)
+
+        # Add to scheduler
         min_cost_scheduler.add_seq_group(seq_group)
 
     def stop_remote_worker_execution_loop(self) -> None:
