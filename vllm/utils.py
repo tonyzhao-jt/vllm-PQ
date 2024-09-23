@@ -6,6 +6,7 @@ import enum
 import gc
 import os
 import random
+import re
 import socket
 import subprocess
 import sys
@@ -543,11 +544,18 @@ def get_open_zmq_ipc_path() -> str:
     return f"ipc://{base_rpc_path}/{uuid4()}"
 
 
-def get_open_port() -> int:
+def get_open_port(force: bool = False) -> int:
     port = envs.VLLM_PORT
     if port is not None:
+        if force and port is not None:
+            # force vLLM to use envs.VLLM_PORT for torch.distributed init
+            # This is because this port will binded by prefill instance
+            # But both prefill and decode instance need to use this port to
+            # initialize torch.distributed
+            return port
         while True:
             try:
+                logger.error('Trying port %d', port)
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.bind(("", port))
                     return port
@@ -1274,3 +1282,13 @@ class AtomicCounter:
     @property
     def value(self):
         return self._value
+
+def parse_url(url: str):
+    pattern = r'((?:\[[0-9a-fA-F:.]+\]|(?:\d{1,3}\.){3}\d{1,3})):(\d+)'
+    match = re.match(pattern, url)
+    if match:
+        ip = match.group(1).replace('[', '').replace(']', '')
+        port = match.group(2)
+        return ip, port
+    else:
+        return None, None
