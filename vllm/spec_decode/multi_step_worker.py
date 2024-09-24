@@ -35,13 +35,13 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
 
     def init_device(self) -> None:
         super().init_device()
-
         self._proposer = Top1Proposer(
             weakref.proxy(self),  # type: ignore[arg-type]
             self.device,
             self.vocab_size,
             max_proposal_len=self.max_model_len,
         )
+        # print(f"SANG-TODO {self._proposer=}")
 
     def set_include_gpu_probs_tensor(self) -> None:
         # Need include_gpu_probs_tensor for MultiStepWorker
@@ -81,8 +81,10 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
             # Here we run the draft_model_runner with multi-step prepare
             # on the GPU directly
             expanded_request.num_steps = sample_len
-            model_outputs = self.execute_model(
+            # print(f"SANG-TODO draft model execute_model_spmd {sample_len=}")
+            model_outputs = self._execute_model_spmd(
                 execute_model_req=expanded_request)
+            # print(f"SANG-TODO draft model {len(model_outputs[0].outputs)=}")
         else:
             # Here we run multi-step directly, with every step prepared
             # on the CPU.
@@ -90,8 +92,8 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
             # and other restrictions that are part of DraftModelRunner's
             # supports_gpu_multi_step(..)
             for _ in range(sample_len):
-                model_output: List[SamplerOutput] = super().execute_model(
-                    execute_model_req=expanded_request)
+                model_output: List[SamplerOutput] = super(
+                )._execute_model_spmd(execute_model_req=expanded_request)
                 assert (len(model_output) == 1
                         ), "composing multistep workers not supported"
                 model_output = model_output[0]
@@ -102,6 +104,7 @@ class MultiStepWorker(Worker, ProposerWorkerBase):
 
         filtered_model_outputs = self._filter_model_output(
             model_outputs, indices_of_seq_with_bonus_tokens)
+        # print(f"SANG-TODO {filtered_model_outputs=}")
         return filtered_model_outputs, True
 
     @staticmethod

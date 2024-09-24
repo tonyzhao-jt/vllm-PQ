@@ -215,8 +215,8 @@ class TP1DraftModelRunner(ModelRunner):
             # we need to figure out the best way to support TP > 1 in this
             # case, because we will at least need to broadcast the sampled
             # tokens to all workers.
-            if not self.is_driver_worker:
-                raise ValueError("TP1DraftModelRunner only supports TP=1.")
+            # if not self.is_driver_worker:
+            # raise ValueError("TP1DraftModelRunner only supports TP=1.")
 
             # Sanity
             if self.lora_config is not None:
@@ -307,7 +307,6 @@ class TP1DraftModelRunner(ModelRunner):
             # Compute the logits.
             logits = self.model.compute_logits(hidden_states,
                                                model_input.sampling_metadata)
-
             # Sample the next token.
             outputs.append(
                 self.model.sample(

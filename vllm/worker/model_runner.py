@@ -1623,8 +1623,8 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
         logits = self.model.compute_logits(hidden_or_intermediate_states,
                                            model_input.sampling_metadata)
 
-        if not self.is_driver_worker:
-            return []
+        # if not self.is_driver_worker:
+        #     return []
 
         if model_input.async_callback is not None:
             model_input.async_callback()

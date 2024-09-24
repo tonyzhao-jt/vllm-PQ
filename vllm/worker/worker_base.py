@@ -363,6 +363,7 @@ class LocalOrDistributedWorkerBase(WorkerBase):
         All workers take the same request, prepare the input and
         execute the model.
         """
+        # print("SANG-TODO worker base _execute_model_spmd")
         assert execute_model_req is not None, (
             "_execute_model_spmd() requires each worker to take in an "
             "ExecuteModelRequest")
@@ -370,7 +371,9 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             execute_model_req=execute_model_req)
         model_input: ModelRunnerInputBase = (
             self.model_runner.prepare_model_input(
-                execute_model_req.seq_group_metadata_list))
+                execute_model_req.seq_group_metadata_list,
+                execute_model_req.virtual_engine,
+                execute_model_req.finished_requests_ids))
 
         self.execute_worker(worker_input)
 
@@ -379,14 +382,19 @@ class LocalOrDistributedWorkerBase(WorkerBase):
             return []
 
         kwargs = extract_previous_hidden_states(execute_model_req)
-
-        return self.model_runner.execute_model(
-            model_input=model_input,
-            kv_caches=self.kv_cache[worker_input.virtual_engine]
-            if self.kv_cache is not None else None,
-            intermediate_tensors=intermediate_tensors,
-            **kwargs,
-        )
+        # print(f"SANG-TODO model runner execute model")
+        try:
+            return self.model_runner.execute_model(
+                model_input=model_input,
+                kv_caches=self.kv_cache[worker_input.virtual_engine]
+                if self.kv_cache is not None else None,
+                intermediate_tensors=intermediate_tensors,
+                num_steps=worker_input.num_steps,
+                **kwargs,
+            )
+        except Exception as e:
+            print(f"SANG-TODO {e}")
+            raise
 
 
 class WorkerWrapperBase:
