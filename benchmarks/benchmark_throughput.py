@@ -247,14 +247,17 @@ def run_hf(
     use_beam_search: bool,
     max_batch_size: int,
     trust_remote_code: bool,
+    device: str,
 ) -> float:
     assert not use_beam_search
+    is_cuda = device == "cuda"
+    if is_cuda:
+        llm = llm.cuda()
     llm = AutoModelForCausalLM.from_pretrained(
-        model, torch_dtype=torch.float16, trust_remote_code=trust_remote_code)
+        model, torch_dtype=torch.float16 if is_cuda else torch.float32, trust_remote_code=trust_remote_code)
     if llm.config.model_type == "llama":
         # To enable padding in the HF backend.
         tokenizer.pad_token = tokenizer.eos_token
-    llm = llm.cuda()
 
     pbar = tqdm(total=len(requests))
     start = time.perf_counter()
@@ -279,7 +282,7 @@ def run_hf(
         input_ids = tokenizer(batch, return_tensors="pt",
                               padding=True).input_ids
         llm_outputs = llm.generate(
-            input_ids=input_ids.cuda(),
+            input_ids=input_ids.cuda() if is_cuda else input_ids,
             do_sample=not use_beam_search,
             num_return_sequences=n,
             temperature=1.0,
@@ -356,7 +359,7 @@ def main(args: argparse.Namespace):
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
                               args.use_beam_search, args.hf_max_batch_size,
-                              args.trust_remote_code)
+                              args.trust_remote_code, args.device)
     elif args.backend == "mii":
         elapsed_time = run_mii(requests, args.model, args.tensor_parallel_size,
                                args.output_len)
