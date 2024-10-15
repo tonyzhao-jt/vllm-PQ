@@ -77,6 +77,7 @@ class LlamaMLP(nn.Module):
         bias: bool = False,
         prefix: str = "",
         last_layer: bool = False,
+        fuse_gemms = True,
     ) -> None:
         super().__init__()
         self.gate_up_proj = MergedColumnParallelLinear(
@@ -85,7 +86,7 @@ class LlamaMLP(nn.Module):
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.gate_up_proj",
-            fuse_ag_gemm=True)
+            fuse_ag_gemm=fuse_gemms)
 
         self.down_proj = RowParallelLinear(
             input_size=intermediate_size,
@@ -93,7 +94,7 @@ class LlamaMLP(nn.Module):
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.down_proj",
-            fuse_gemm_rs=(not last_layer),
+            fuse_gemm_rs=(not last_layer) and fuse_gemms,
         )
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
@@ -123,6 +124,7 @@ class LlamaAttention(nn.Module):
         bias: bool = False,
         cache_config: Optional[CacheConfig] = None,
         prefix: str = "",
+        fuse_gemms=True,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -157,14 +159,14 @@ class LlamaAttention(nn.Module):
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv_proj",
-            fuse_ag_gemm=(not first_layer))
+            fuse_ag_gemm=(not first_layer) and fuse_gemms)
         self.o_proj = RowParallelLinear(
             input_size=self.total_num_heads * self.head_dim,
             output_size=hidden_size,
             bias=bias,
             quant_config=quant_config,
             prefix=f"{prefix}.o_proj",
-            fuse_gemm_rs=True,
+            fuse_gemm_rs=fuse_gemms,
         )
 
         is_neox_style = True
@@ -217,8 +219,10 @@ class LlamaDecoderLayer(nn.Module):
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
+        fuse_gemms = True,
     ) -> None:
         super().__init__()
+        self.fuse_gemms = fuse_gemms
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -246,6 +250,7 @@ class LlamaDecoderLayer(nn.Module):
             bias=attention_bias,
             cache_config=cache_config,
             prefix=f"{prefix}.self_attn",
+            fuse_gemms=self.fuse_gemms,
         )
         self.mlp = LlamaMLP(
             hidden_size=self.hidden_size,
@@ -255,6 +260,7 @@ class LlamaDecoderLayer(nn.Module):
             bias=getattr(config, "mlp_bias", False),
             prefix=f"{prefix}.mlp",
             last_layer=last_layer,
+            fuse_gemms=self.fuse_gemms,
         )
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
@@ -284,7 +290,7 @@ class LlamaDecoderLayer(nn.Module):
         pprint(f"RESIDUAL SHAPE = {residual.shape}")
 
         def slices(residual) -> bool:
-            if not should_slice(residual.shape):
+            if not self.fuse_gemms or not should_slice(residual.shape):
                 pprint(f"SLICES TOO SMALL {[residual.shape]}")
                 return []
 
@@ -314,7 +320,7 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
 
         pprint(f"LAST_LAYER = {self.last_layer}, #slices = {len(residual_slices)}")
-        if self.last_layer and should_slice(orig_residual_shape):
+        if self.fuse_gemms and self.last_layer and should_slice(orig_residual_shape):
             pprint(f"FINAL REDUCE {my_residual.shape}")
             if False:
                 residual = tensor_model_parallel_all_gather(my_residual, 0)
@@ -343,6 +349,7 @@ class LlamaModel(nn.Module):
                  prefix: str = "",
                  layer_type: Type[LlamaDecoderLayer] = LlamaDecoderLayer):
         super().__init__()
+        fuse_gemms = False #True
 
         config = vllm_config.model_config.hf_config
         cache_config = vllm_config.cache_config
