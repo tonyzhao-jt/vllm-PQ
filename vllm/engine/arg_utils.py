@@ -95,6 +95,7 @@ class EngineArgs:
     quantization_param_path: Optional[str] = None
     seed: int = 0
     max_model_len: Optional[int] = None
+    return_hidden_states: bool = False
     worker_use_ray: bool = False
     # Note: Specifying a custom executor backend by passing a class
     # is intended for expert use only. The API may change without
@@ -674,6 +675,10 @@ class EngineArgs:
             help='The maximum sequence length supported by the '
             'draft model. Sequences over this length will skip '
             'speculation.')
+        parser.add_argument("--return-hidden-states",
+                            action="store_true",
+                            default=False,
+                            help="Return hidden states from the model.")
 
         parser.add_argument(
             '--speculative-disable-by-batch-size',
@@ -848,6 +853,7 @@ class EngineArgs:
             rope_theta=self.rope_theta,
             tokenizer_revision=self.tokenizer_revision,
             max_model_len=self.max_model_len,
+            return_hidden_states=self.return_hidden_states,
             quantization=self.quantization,
             quantization_param_path=self.quantization_param_path,
             enforce_eager=self.enforce_eager,
@@ -899,14 +905,12 @@ class EngineArgs:
 
         device_config = DeviceConfig(device=self.device)
         model_config = self.create_model_config()
-
         if model_config.is_multimodal_model:
             if self.enable_prefix_caching:
                 logger.warning(
                     "--enable-prefix-caching is currently not "
                     "supported for multimodal models and has been disabled.")
             self.enable_prefix_caching = False
-
         cache_config = CacheConfig(
             block_size=self.block_size if self.device != "neuron" else
             self.max_model_len,  # neuron needs block_size = max_model_len
