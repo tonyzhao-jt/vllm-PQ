@@ -27,8 +27,8 @@ from vllm.vllm_flash_attn import (flash_attn_varlen_func,
 class FlashAttentionBackend(AttentionBackend):
 
     @staticmethod
-    def get_supported_head_sizes() -> List[int]:
-        return [32, 64, 96, 128, 160, 192, 224, 256]
+    def get_max_supported_head_size() -> int:
+        return 256
 
     @staticmethod
     def get_name() -> str:
@@ -543,11 +543,11 @@ class FlashAttentionImpl(AttentionImpl):
             raise ValueError(
                 "Sliding window is not supported in FlashAttention.")
 
-        support_head_sizes = FlashAttentionBackend.get_supported_head_sizes()
-        if head_size not in support_head_sizes:
+        max_head_size = FlashAttentionBackend.get_max_supported_head_size()
+        if head_size <= 0 or head_size > max_head_size:
             raise ValueError(
                 f"Head size {head_size} is not supported by FlashAttention. "
-                f"Supported head sizes are: {support_head_sizes}.")
+                f"Maximum supported head size is: {max_head_size}.")
 
     def forward(
         self,
