@@ -48,6 +48,7 @@ def adjust_bitblas_shard(param, shard_size, shard_offset):
 
     return shard_size, shard_offset
 
+
 def adjust_bitsandbytes_4bit_shard(param: Parameter,
                                    qkv_offsets: Dict[str, Tuple[int, int]],
                                    loaded_shard_id: str) -> Tuple[int, int]:
