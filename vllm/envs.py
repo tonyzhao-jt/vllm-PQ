@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     VLLM_DISABLED_KERNELS: List[str] = []
     VLLM_USE_V1: bool = False
     VLLM_ENABLE_V1_MULTIPROCESSING: bool = False
+    VLLM_USE_FLUX: bool = False
 
 
 def get_default_cache_root():
@@ -462,6 +463,10 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     # If set, enable multiprocessing in LLM for the V1 code path.
     "VLLM_ENABLE_V1_MULTIPROCESSING":
     lambda: bool(int(os.getenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0"))),
+
+    # If set, try to use the flux fused collective comminucation gemm kernels
+    "VLLM_USE_FLUX":
+    lambda: bool(int(os.getenv("VLLM_USE_FLUX", "0"))),
 }
 
 # end-env-vars-definition

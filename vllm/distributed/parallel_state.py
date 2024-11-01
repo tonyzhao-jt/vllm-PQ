@@ -30,12 +30,6 @@ from multiprocessing import shared_memory
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from unittest.mock import patch
 
-try:
-    import flux
-    has_flux = True
-except ImportError:
-    has_flux = False
-
 import torch
 import torch.distributed
 from torch.distributed import Backend, ProcessGroup, _symmetric_memory
@@ -44,6 +38,14 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.utils import direct_register_custom_op, supports_custom_op
+
+has_flux = False
+if envs.VLLM_USE_FLUX:
+    try:
+        import flux
+        has_flux = True
+    except ImportError:
+        has_flux = False
 
 
 @dataclass
