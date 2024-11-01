@@ -325,6 +325,7 @@ class NCCLLibrary:
         self.NCCL_CHECK(self._funcs["ncclAllGather"](sendbuff, recvbuff, count,
                                                      datatype, comm, stream))
 
+
 __all__ = [
     "NCCLLibrary", "ncclDataTypeEnum", "ncclRedOpTypeEnum", "ncclUniqueId",
     "ncclComm_t", "cudaStream_t", "buffer_type"

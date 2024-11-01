@@ -464,7 +464,7 @@ environment_variables: Dict[str, Callable[[], Any]] = {
     "VLLM_ENABLE_V1_MULTIPROCESSING":
     lambda: bool(int(os.getenv("VLLM_ENABLE_V1_MULTIPROCESSING", "0"))),
 
-    # If set, try to use the flux fused collective comminucation gemm kernels
+    # If set, try to use the flux fused collective communication gemm kernels.
     "VLLM_USE_FLUX":
     lambda: bool(int(os.getenv("VLLM_USE_FLUX", "0"))),
 }
