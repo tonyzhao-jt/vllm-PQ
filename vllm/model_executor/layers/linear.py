@@ -24,10 +24,10 @@ logger = init_logger(__name__)
 
 WEIGHT_LOADER_V2_SUPPORTED = [
     "CompressedTensorsLinearMethod", "AWQMarlinLinearMethod",
-    "AWQLinearMethod", "GPTQMarlinLinearMethod", "Fp8LinearMethod",
-    "MarlinLinearMethod", "QQQLinearMethod", "GPTQMarlin24LinearMethod",
-    "TPUInt8LinearMethod", "GPTQLinearMethod", "FBGEMMFp8LinearMethod",
-    "ModelOptFp8LinearMethod", "IPEXAWQLinearMethod"
+    "AWQLinearMethod", "GPTQMarlinLinearMethod", "GPTQBitBLASLinearMethod",
+    "Fp8LinearMethod", "MarlinLinearMethod", "QQQLinearMethod",
+    "GPTQMarlin24LinearMethod", "TPUInt8LinearMethod", "GPTQLinearMethod",
+    "FBGEMMFp8LinearMethod", "ModelOptFp8LinearMethod", "IPEXAWQLinearMethod"
 ]
 
 
@@ -394,7 +394,7 @@ class ColumnParallelLinear(LinearBase):
     def extra_repr(self) -> str:
         s = f"in_features={self.input_size}"
         s += f", output_features={self.output_size_per_partition}"
-        s += f", bias={self.bias is not None}"
+        s += f", bias={self.bias is not None}" if hasattr(self, "bias") else ""
         s += f", tp_size={get_tensor_model_parallel_world_size()}"
         s += f", gather_output={self.gather_output}"
         return s
@@ -789,7 +789,7 @@ class QKVParallelLinear(ColumnParallelLinear):
                       param: Parameter,
                       loaded_weight: torch.Tensor,
                       loaded_shard_id: Optional[str] = None):
-
+        print("QKVParallelLinear weight_loader")
         # Special case for GGUF
         # initialize GGUF param after we know the quantize type
         is_gguf_weight = getattr(param, "is_gguf_weight", False)
@@ -1111,7 +1111,7 @@ class RowParallelLinear(LinearBase):
     def extra_repr(self) -> str:
         s = f"input_features={self.input_size_per_partition}"
         s += f", output_features={self.output_size}"
-        s += f", bias={self.bias is not None}"
+        s += f", bias={self.bias is not None}" if hasattr(self, "bias") else ""
         s += f", tp_size={self.tp_size}"
         s += f", reduce_results={self.reduce_results}"
         return s

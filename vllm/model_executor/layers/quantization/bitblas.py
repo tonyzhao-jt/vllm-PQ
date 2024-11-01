@@ -8,11 +8,11 @@ from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.utils import set_weight_attrs
+from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
+    BITBLAS_OPTIMIZE_FEATURES, BITBLAS_SUPPORTED_NUM_BITS,
+    BITBLAS_SUPPORTED_SYM)
 
 logger = init_logger(__name__)
-
-BITBLAS_SUPPORTED_NUM_BITS = [1, 2, 4, 8]
-BITBLAS_SUPPORTED_SYM = [False, True]
 
 
 class BitBLASConfig(QuantizationConfig):
@@ -157,7 +157,7 @@ class BitBLASLinearMethod(LinearMethodBase):
     Args:
         quant_config: The BitBLAS quantization config.
     """
-    OPT_FEATURES = [1, 16, 32, 64, 128, 256, 512, 1024]
+    OPT_FEATURES = BITBLAS_OPTIMIZE_FEATURES
     ENABLE_TUNING = True
     BITBLAS_DTYPES = {
         torch.float32: "float32",
@@ -351,6 +351,10 @@ class BitBLASLinearMethod(LinearMethodBase):
         from bitblas import MatmulConfig
         bitblas_dtype = self.BITBLAS_DTYPES[params_dtype]
 
+        with_scaling = False
+        with_zeros = False
+        group_size = self.quant_config.group_size
+        zeros_mode = self.quant_config.zeros_mode
         if self.quant_config.quant_method == "gptq":
             with_scaling = True
             with_zeros = True
@@ -358,8 +362,6 @@ class BitBLASLinearMethod(LinearMethodBase):
             if self.quant_config.is_sym:
                 with_zeros = False
                 W_dtype = f"int{bits}"
-            group_size = self.quant_config.group_size
-            zeros_mode = self.quant_config.zeros_mode
         else:
             raise ValueError(
                 f"Unsupported quant_method {self.quant_config.quant_method}")
@@ -395,13 +397,15 @@ class BitBLASLinearMethod(LinearMethodBase):
         if bitblas_matmul is None:
             bitblas_matmul = Matmul(config, target=BITBLAS_TARGET)
             if enable_tuning:
+                TUNING_MESSAGE = (f"BitBLAS Operator {config} is tuning ...")
+                logger.info(TUNING_MESSAGE)
                 bitblas_matmul.hardware_aware_finetune(topk=20)
                 global_operator_cache.add(config, bitblas_matmul)
                 global_operator_cache.save_into_database(
                     BITBLAS_DATABASE_PATH, BITBLAS_TARGET)
-                TUNING_MESSAGE = (
+                TUNED_MESSAGE = (
                     f"BitBLAS Operator {config} tuned and saved to database.")
-                logger.info(TUNING_MESSAGE)
+                logger.info(TUNED_MESSAGE)
             else:
                 _message = f"BitBLAS Operator {config} created."
                 logger.info(_message)

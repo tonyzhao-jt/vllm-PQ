@@ -1,6 +1,6 @@
 import enum
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import torch
 from torch.nn.parameter import Parameter
@@ -10,51 +10,34 @@ from vllm.model_executor.layers.linear import (LinearBase, LinearMethodBase,
                                                set_weight_attrs)
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
+from vllm.model_executor.layers.quantization.kernels import (
+    MPLinearLayerConfig, BitBLASLinearKernel)
+from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
+    check_bitblas_supported,
+    bitblas_repeat_scales_on_all_ranks,
+    verify_bitblas_supported,
+    BITBLAS_SUPPORTED_NUM_BITS as GPTQ_BITBLAS_SUPPORTED_NUM_BITS,
+    BITBLAS_SUPPORTED_SYM as GPTQ_BITBLAS_SUPPORTED_SYM,
+)
+
+from vllm.scalar_type import scalar_types
+from vllm.model_executor.parameter import (ChannelQuantScaleParameter,
+                                           GroupQuantScaleParameter,
+                                           PackedColumnParameter,
+                                           PackedvLLMParameter,
+                                           RowvLLMParameter)
 
 logger = init_logger(__name__)
-
-GPTQ_BITBLAS_SUPPORTED_NUM_BITS = [1, 2, 4, 8]
-GPTQ_BITBLAS_SUPPORTED_SYM = [False, True]
-
-
-def unpack_qzeros(qzeros, bits, is_gptq_v2=False) -> torch.Tensor:
-    qzeros = qzeros.view(torch.int32)
-    elems_per_int32 = 32 // bits
-    unpacked_zeros = torch.zeros(
-        (qzeros.shape[0], qzeros.shape[1] * elems_per_int32),
-        dtype=torch.int8,
-        device=qzeros.device,
-        requires_grad=False,
-    )
-
-    for col in range(unpacked_zeros.shape[1]):
-        i = col % elems_per_int32
-        unpacked_zeros[:, col] = (qzeros[:, col // elems_per_int32] >>
-                                  (bits * i)) & 0xF
-    if not is_gptq_v2:
-        return unpacked_zeros + 1
-    return unpacked_zeros
-
-
-def unpack_qweight(qweight, bits):
-    qweight = qweight.view(torch.int8)
-    elems_per_int8 = 8 // bits
-    unpacked_weight = torch.zeros(
-        (qweight.shape[0], qweight.shape[1] * elems_per_int8),
-        dtype=torch.int8,
-        device=qweight.device,
-        requires_grad=False,
-    )
-    for col in range(unpacked_weight.shape[1]):
-        i = col % elems_per_int8
-        unpacked_weight[:, col] = (qweight[:, col // elems_per_int8] >>
-                                   (bits * i))
-
-    return torch.bitwise_and(unpacked_weight, 2**bits - 1)
 
 
 class GPTQBitBLASConfig(QuantizationConfig):
     """Config class for GPTQ BitBLAS"""
+
+    # (num_bits, is_sym) -> quant_type
+    TYPE_MAP = {
+        (4, True): scalar_types.uint4b8,
+        (8, True): scalar_types.uint8b128,
+    }
 
     TORCH_DTYPE = torch.float16
     GPTQ_CKPT_STORAGE_DTYPE = (
@@ -67,7 +50,7 @@ class GPTQBitBLASConfig(QuantizationConfig):
     ZEROS_MODE = "quantized"
 
     def __init__(self, weight_bits: int, group_size: int, desc_act: bool,
-                 is_sym: bool) -> None:
+                 is_sym: bool, quant_method: Optional[str]) -> None:
 
         try:
             import bitblas
@@ -92,6 +75,7 @@ class GPTQBitBLASConfig(QuantizationConfig):
         self.group_size = group_size
         self.desc_act = desc_act
         self.is_sym = is_sym
+        self.quant_method = quant_method
 
         # Verify
         if self.weight_bits not in GPTQ_BITBLAS_SUPPORTED_NUM_BITS:
@@ -117,10 +101,18 @@ class GPTQBitBLASConfig(QuantizationConfig):
         # Zeros type for the quantized weights.
         self.zeros_mode = self.ZEROS_MODE
 
+        if (weight_bits, is_sym) not in self.TYPE_MAP:
+            raise ValueError("Unsupported quantization config: "
+                             f"bits={weight_bits}, sym={is_sym}")
+
+        self.quant_type = self.TYPE_MAP[(weight_bits, is_sym)]
+
     def __repr__(self) -> str:
         return (f"GPTQBitBLASConfig(weight_bits={self.weight_bits}, "
                 f"group_size={self.group_size}, "
-                f"desc_act={self.desc_act})")
+                f"desc_act={self.desc_act})"
+                f"is_sym={self.is_sym}, "
+                f"quant_method={self.quant_method})")
 
     @classmethod
     def get_name(cls) -> str:
@@ -144,12 +136,13 @@ class GPTQBitBLASConfig(QuantizationConfig):
         group_size = cls.get_from_keys(config, ["group_size"])
         desc_act = cls.get_from_keys(config, ["desc_act"])
         is_sym = cls.get_from_keys(config, ["sym"])
-        return cls(weight_bits, group_size, desc_act, is_sym)
+        quant_method = cls.get_from_keys(config, ["quant_method"])
+        return cls(weight_bits, group_size, desc_act, is_sym, quant_method)
 
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg,
                                      user_quant) -> Optional[str]:
-        can_convert = cls.is_bitblas_compatible(hf_quant_cfg)
+        can_convert = cls.is_gptq_bitblas_compatible(hf_quant_cfg)
 
         is_valid_user_quant = user_quant is None or user_quant == "bitblas"
 
@@ -176,7 +169,7 @@ class GPTQBitBLASConfig(QuantizationConfig):
         return []
 
     @classmethod
-    def is_bitblas_compatible(cls, quant_config: Dict[str, Any]):
+    def is_gptq_bitblas_compatible(cls, quant_config: Dict[str, Any]):
         # Extract data from quant config.
         num_bits = quant_config.get("bits")
         group_size = quant_config.get("group_size")
@@ -195,8 +188,9 @@ class GPTQBitBLASConfig(QuantizationConfig):
             return False
 
         # Otherwise, can convert if model satisfies bitblas constraints.
-        return (num_bits in GPTQ_BITBLAS_SUPPORTED_NUM_BITS
-                and sym in GPTQ_BITBLAS_SUPPORTED_SYM)
+        return check_bitblas_supported(quant_type=cls.TYPE_MAP[(num_bits,
+                                                                sym)],
+                                       group_size=group_size)
 
 
 class GPTQBitBLASState(Enum):
@@ -211,18 +205,14 @@ class GPTQBitBLASLinearMethod(LinearMethodBase):
         quant_config: The GPTQ BitBLAS quantization config.
     """
 
-    OPT_FEATURES = [1, 16, 32, 64, 128, 256, 512]
-    ENABLE_TUNING = True
-    BITBLAS_DTYPES = {
-        torch.float32: "float32",
-        torch.float16: "float16",
-        torch.bfloat16: "bfloat16",
-        torch.half: "float16",
-        torch.int8: "int8",
-    }
+    kernel_type = BitBLASLinearKernel
+    _kernel_backends_being_used: Set[str] = set()
 
     def __init__(self, quant_config: GPTQBitBLASConfig) -> None:
         self.quant_config = quant_config
+        # Verify supported on platform.
+        verify_bitblas_supported(quant_type=self.quant_config.quant_type,
+                                 group_size=self.quant_config.group_size)
 
     def create_weights(
         self,
@@ -257,7 +247,6 @@ class GPTQBitBLASLinearMethod(LinearMethodBase):
             if the input size per partition is not divisible by the 
             group size in `quant_config`.
         """
-        del output_size  # Unused arguments.
         if params_dtype != torch.float16:
             raise ValueError("Parameter data type must be torch.float16, "
                              f"but got {params_dtype}")
@@ -274,64 +263,72 @@ class GPTQBitBLASLinearMethod(LinearMethodBase):
                 f"be divisible by group size ({self.quant_config.group_size})."
             )
 
+        kernel_type = self.kernel_type
         # Validate output_size_per_partition
         output_size_per_partition = sum(output_partition_sizes)
-        # By default, no sharding over "input dim"
-        scales_and_zp_size = input_size // group_size
-        scales_and_zp_input_dim = None
-        # Initialize or retrieve the BitBLAS matrix multiplication operator.
-        self._configure_bitblas_matmul(
-            input_size_per_partition,
-            output_size_per_partition,
-            params_dtype=params_dtype,
-            enable_tuning=self.ENABLE_TUNING,
-            bias=False,
-            layout="nt",
-            bits=self.quant_config.weight_bits,
+
+        is_row_parallel = input_size != input_size_per_partition
+        weight_loader = extra_weight_attrs.get("weight_loader")
+
+        mp_linear_kernel_config = MPLinearLayerConfig(
+            full_weight_shape=(input_size, output_size),
+            partition_weight_shape=\
+                (input_size_per_partition, output_size_per_partition),
+            weight_type=self.quant_config.quant_type,
+            act_type=params_dtype,
+            group_size=self.quant_config.group_size,
+            zero_points=False,
+            has_g_idx=self.quant_config.desc_act
         )
+
+        if kernel_type.__name__ not in self._kernel_backends_being_used:
+            logger.info("Using %s for GPTQBitBLASLinearMethod",
+                        kernel_type.__name__)
+            self._kernel_backends_being_used.add(kernel_type.__name__)
+
+        # Normalize group_size
+        if self.quant_config.group_size != -1:
+            group_size = self.quant_config.group_size
+        else:
+            group_size = input_size
+
+        # Determine sharding
+        if bitblas_repeat_scales_on_all_ranks(self.quant_config.desc_act,
+                                              self.quant_config.group_size,
+                                              is_row_parallel):
+            # By setting scale_dim == None, weight_loader will
+            # repeat the scales on each GPU in TP>1 case.
+            scales_and_zp_input_dim = None
+            scales_and_zp_size = input_size // group_size
+        else:
+            # By setting scale_dim == 0, weight_loader will
+            # shard the scales in TP>1 case.
+            scales_and_zp_input_dim = 0
+            scales_and_zp_size = input_size_per_partition // group_size
 
         # Init buffers
         # Quantized weights
-        qweight = Parameter(
-            torch.empty(
+        # Quantized weights
+        qweight = PackedvLLMParameter(
+            data=torch.empty(
                 input_size_per_partition // self.quant_config.pack_factor,
                 output_size_per_partition,
                 dtype=torch.int32,
             ),
-            requires_grad=False,
-        )
-        set_weight_attrs(
-            qweight,
-            {
-                **extra_weight_attrs,
-                "input_dim": 0,
-                "output_dim": 1,
-                "packed_dim": 0,
-                "pack_factor": self.quant_config.pack_factor,
-            },
-        )
+            input_dim=0,
+            output_dim=1,
+            packed_dim=0,
+            packed_factor=self.quant_config.pack_factor,
+            weight_loader=weight_loader)
 
         # Activation order
-        g_idx = Parameter(
-            torch.empty(
-                input_size_per_partition,
-                dtype=torch.int32,
-            ),
-            requires_grad=False,
-        )
         # Ignore warning from fused linear layers such as QKVParallelLinear.
-        set_weight_attrs(
-            g_idx,
-            {
-                **extra_weight_attrs, "input_dim": 0,
-                "ignore_warning": True
-            },
-        )
-
-        g_idx_sort_indices = torch.empty(
-            g_idx.shape,
+        g_idx = RowvLLMParameter(data=torch.empty(
+            input_size_per_partition,
             dtype=torch.int32,
-        )
+        ),
+                                 input_dim=0,
+                                 weight_loader=weight_loader)
 
         # Scales
         scales = Parameter(
@@ -352,138 +349,79 @@ class GPTQBitBLASLinearMethod(LinearMethodBase):
         )
 
         # Quantized zero-points
-        qzeros = Parameter(
+        qzeros_args = {
+            "data":
             torch.empty(
                 scales_and_zp_size,
                 output_size_per_partition // self.quant_config.pack_factor,
                 dtype=torch.int32,
             ),
-            requires_grad=False,
-        )
-        set_weight_attrs(
-            qzeros,
-            {
-                **extra_weight_attrs,
-                "input_dim": scales_and_zp_input_dim,
-                "output_dim": 1,
-                "packed_dim": 1,
-                "pack_factor": self.quant_config.pack_factor,
-            },
-        )
+            "weight_loader":
+            weight_loader
+        }
+        weight_scale_args = {
+            "data":
+            torch.empty(
+                scales_and_zp_size,
+                output_size_per_partition,
+                dtype=params_dtype,
+            ),
+            "weight_loader":
+            weight_loader
+        }
+
+        if scales_and_zp_input_dim is None:
+            scales = ChannelQuantScaleParameter(output_dim=1,
+                                                **weight_scale_args)
+            qzeros = PackedColumnParameter(
+                output_dim=1,
+                packed_dim=1,
+                packed_factor=self.quant_config.pack_factor,
+                **qzeros_args)
+
+        else:
+            scales = GroupQuantScaleParameter(output_dim=1,
+                                              input_dim=0,
+                                              **weight_scale_args)
+            qzeros = PackedvLLMParameter(
+                input_dim=0,
+                output_dim=1,
+                packed_dim=1,
+                packed_factor=self.quant_config.pack_factor,
+                **qzeros_args)
+
         layer.register_parameter("qweight", qweight)
         layer.register_parameter("g_idx", g_idx)
         layer.register_parameter("scales", scales)
         layer.register_parameter("qzeros", qzeros)
-        layer.g_idx_sort_indices = g_idx_sort_indices
-        layer.input_size_per_partition = input_size_per_partition
-        layer.output_size_per_partition = output_size_per_partition
-        layer.input_size = input_size
-        layer.bitblas_state = GPTQBitBLASState.REPACK
 
-    def _configure_bitblas_matmul(
-        self,
-        infeatures,
-        outfeatures,
-        params_dtype,
-        enable_tuning,
-        bias,
-        layout,
-        bits,
-    ):
-        from bitblas import MatmulConfig
-
-        bitblas_dtype = self.BITBLAS_DTYPES[params_dtype]
-
-        W_dtype = f"uint{bits}"
-
-        matmul_config = MatmulConfig(
-            M=self.OPT_FEATURES,
-            N=outfeatures,
-            K=infeatures,
-            A_dtype=bitblas_dtype,
-            W_dtype=W_dtype,
-            out_dtype=bitblas_dtype,
-            accum_dtype="int32" if bitblas_dtype == "int8" else bitblas_dtype,
-            storage_dtype=self.quant_config.GPTQ_BITBLAS_STORAGE_DTYPE,
-            with_scaling=True,
-            with_zeros=True,
-            group_size=self.quant_config.group_size,
-            with_bias=bias,
-            layout=layout,
-            zeros_mode=self.quant_config.zeros_mode,
+        self.kernel = kernel_type(
+            mp_linear_kernel_config,
+            w_q_param_name="qweight",
+            w_s_param_name="scales",
+            w_zp_param_name="qzeros",
+            w_gidx_param_name="g_idx",
+            bitblas_quant_config=self.quant_config,
         )
-        self.bitblas_matmul = self._get_or_create_bitblas_operator(
-            matmul_config, enable_tuning)
 
-    def _get_or_create_bitblas_operator(self, config, enable_tuning):
-        from bitblas import Matmul, auto_detect_nvidia_target
-        from bitblas.cache import get_database_path, global_operator_cache
-        BITBLAS_DATABASE_PATH = get_database_path()
-        BITBLAS_TARGET = auto_detect_nvidia_target()
+        # Initialize or retrieve the BitBLAS matrix multiplication operator.
+        self.kernel.configure_bitblas_matmul(
+            input_size_per_partition,
+            output_size_per_partition,
+            params_dtype=params_dtype,
+            bias=False,
+        )
 
-        if global_operator_cache.size() == 0:
-            global_operator_cache.load_from_database(BITBLAS_DATABASE_PATH,
-                                                     BITBLAS_TARGET)
+    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
+        self.kernel.process_weights_after_loading(layer)
 
-        bitblas_matmul = global_operator_cache.get(config)
-        if bitblas_matmul is None:
-            bitblas_matmul = Matmul(config,
-                                    target=BITBLAS_TARGET,
-                                    enable_tuning=False)
-            if enable_tuning:
-                bitblas_matmul.hardware_aware_finetune(topk=20)
-                global_operator_cache.add(config, bitblas_matmul)
-                global_operator_cache.save_into_database(
-                    BITBLAS_DATABASE_PATH, BITBLAS_TARGET)
-                TUNING_MESSAGE = (
-                    f"BitBLAS Operator {config} tuned and saved to database.")
-                logger.info(TUNING_MESSAGE)
-            else:
-                _message = f"BitBLAS Operator {config} created without tuning. "
-                logger.info(_message)
-        else:
-            _message = f"BitBLAS Operator {config} retrieved from cache."
-            logger.info(_message)
-        return bitblas_matmul
-
-    def repack_bitblas_from_gptq(self, b_q_weight: torch.Tensor,
-                                 scales: torch.Tensor, qzeros: torch.Tensor):
-        from bitblas.quantization.utils import general_compress
-
-        # qweight in gptq old quant linear stored with
-        # (outfeatures, infeatures), should be transposed.
-        qweight = b_q_weight.T.contiguous().view(
-            self.quant_config.TORCH_BITBLAS_STORAGE_DTYPE)
-        intweight = unpack_qweight(qweight,
-                                   self.quant_config.weight_bits).contiguous()
-        if self.bitblas_matmul.weight_transform is not None:
-            qweight = self.bitblas_matmul.weight_transform(
-                intweight.cpu()).cuda()
-        # scales in gptq old quant linear stored with
-        # (infeatures // group_size, outfeatures), should be transposed.
-        scales = scales.T.contiguous()
-        # qzeros should be de-quantized to int zeros.
-        intzeros = unpack_qzeros(qzeros,
-                                 self.quant_config.weight_bits).T.contiguous()
-        zeros: Optional[torch.Tensor] = None
-        if self.bitblas_matmul.config.zeros_mode == "original":
-            zeros = intzeros.to(torch.float16).contiguous()
-        elif self.bitblas_matmul.config.zeros_mode == "rescale":
-            assert zeros is not None, "zeros should not be None"
-            zeros[:, :] = intzeros.to(torch.float16)[:, :] * scales[:, :]
-        elif self.bitblas_matmul.config.zeros_mode == "quantized":
-            zeros = (torch.Tensor(
-                general_compress(
-                    intzeros.T.contiguous().cpu().numpy(),
-                    self.quant_config.weight_bits,
-                )).to(qweight.device).to(
-                    self.quant_config.TORCH_BITBLAS_STORAGE_DTYPE).contiguous(
-                    ))
-        else:
-            raise ValueError("Unsupported zeros type: {}".format(
-                self.bitblas_matmul.config.zeros_mode))
-
-        return qweight, scales, zeros
+    def apply(
+        self,
+        layer: torch.nn.Module,
+        x: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.kernel.apply_weights(layer, x, bias)
 
     def apply(
         self,

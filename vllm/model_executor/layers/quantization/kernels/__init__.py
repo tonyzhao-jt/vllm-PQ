@@ -7,6 +7,8 @@ from vllm.model_executor.layers.quantization.kernels.machete import (
     MacheteLinearKernel)
 from vllm.model_executor.layers.quantization.kernels.marlin import (
     MarlinLinearKernel)
+from vllm.model_executor.layers.quantization.kernels.bitblas import (
+    BitBLASLinearKernel)
 from vllm.model_executor.layers.quantization.kernels.MPLinearKernel import (
     MPLinearKernel, MPLinearLayerConfig)
 from vllm.platforms import current_platform
@@ -15,6 +17,7 @@ from vllm.platforms import current_platform
 _POSSIBLE_KERNELS: List[Type[MPLinearKernel]] = [
     MacheteLinearKernel,
     MarlinLinearKernel,
+    BitBLASLinearKernel,
     ExllamaLinearKernel,
 ]
 
