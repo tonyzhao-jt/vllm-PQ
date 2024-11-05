@@ -876,25 +876,12 @@ def reshape_and_cache_flash(
     kv_cache_dtype: str,
     k_scale: float,
     v_scale: float,
+    is_NHD: bool = True,
 ) -> None:
     torch.ops._C_cache_ops.reshape_and_cache_flash(key, value, key_cache,
                                                    value_cache, slot_mapping,
                                                    kv_cache_dtype, k_scale,
-                                                   v_scale)
-
-
-def reshape_and_cache_xqa(
-    key: torch.Tensor,
-    value: torch.Tensor,
-    kv_cache: torch.Tensor,
-    slot_mapping: torch.Tensor,
-    kv_cache_dtype: str,
-    k_scale: float,
-    v_scale: float,
-) -> None:
-    torch.ops._C_cache_ops.reshape_and_cache_xqa(key, value, kv_cache,
-                                                 slot_mapping, kv_cache_dtype,
-                                                 k_scale, v_scale)
+                                                   v_scale, is_NHD)
 
 
 def copy_blocks(key_caches: List[torch.Tensor],

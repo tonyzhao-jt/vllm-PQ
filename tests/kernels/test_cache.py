@@ -15,6 +15,7 @@ NUM_LAYERS = [1]  # Arbitrary values for testing
 NUM_HEADS = [8]  # Arbitrary values for testing
 HEAD_SIZES = [64, 80, 120, 256]
 BLOCK_SIZES = [8, 16, 32]
+CACHE_LAYOUTS = ["NHD", "HND"]
 
 # Arbitrary values for testing
 # don't make it too large. e.g. [1024, 36000] will OOM
@@ -211,6 +212,7 @@ def test_reshape_and_cache(
 @pytest.mark.parametrize("seed", SEEDS)
 @pytest.mark.parametrize("device", CUDA_DEVICES)
 @pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPE)
+@pytest.mark.parametrize("kv_layout", CACHE_LAYOUTS)
 @torch.inference_mode()
 def test_reshape_and_cache_flash(
     kv_cache_factory_flashinfer,
@@ -223,6 +225,7 @@ def test_reshape_and_cache_flash(
     seed: int,
     device: str,
     kv_cache_dtype: str,
+    kv_layout: str,
 ) -> None:
     current_platform.seed_everything(seed)
     torch.set_default_device(device)
@@ -233,7 +236,7 @@ def test_reshape_and_cache_flash(
     slot_mapping = torch.tensor(slot_mapping_lst,
                                 dtype=torch.long,
                                 device=device)
-
+    is_NHD == True if kv_layout == "NHD" else False
     qkv = torch.randn(num_tokens,
                       3,
                       num_heads,
@@ -252,6 +255,7 @@ def test_reshape_and_cache_flash(
         kv_cache_dtype,
         dtype,
         device=device,
+        is_NHD=is_NHD,
     )
     key_cache, value_cache = key_caches[0].contiguous(
     ), value_caches[0].contiguous()
@@ -275,10 +279,10 @@ def test_reshape_and_cache_flash(
     # Call the reshape_and_cache kernel.
     opcheck(torch.ops._C_cache_ops.reshape_and_cache_flash,
             (key, value, key_cache, value_cache, slot_mapping, kv_cache_dtype,
-             k_scale, v_scale),
+             k_scale, v_scale, is_NHD),
             cond=(head_size == HEAD_SIZES[0]))
     ops.reshape_and_cache_flash(key, value, key_cache, value_cache,
-                                slot_mapping, kv_cache_dtype, k_scale, v_scale)
+                                slot_mapping, kv_cache_dtype, k_scale, v_scale, is_NHD)
 
     if kv_cache_dtype == "fp8":
         result_key_cache = torch.empty_like(key_cache, dtype=torch.float16)
@@ -300,8 +304,12 @@ def test_reshape_and_cache_flash(
     for i in range(num_tokens):
         block_idx = block_indicies_lst[i]
         block_offset = block_offsets_lst[i]
-        cloned_key_cache[block_idx, block_offset, :, :] = key[i]
-        cloned_value_cache[block_idx, block_offset, :, :] = value[i]
+        if is_NHD:
+            cloned_key_cache[block_idx, block_offset, :, :] = key[i]
+            cloned_value_cache[block_idx, block_offset, :, :] = value[i]
+        else:
+            cloned_key_cache[block_idx, :, block_offset, :] = key[i]
+            cloned_value_cache[block_idx, :, block_offset, :] = value[i]
 
     if kv_cache_dtype == "fp8":
         torch.testing.assert_close(result_key_cache,
@@ -315,102 +323,6 @@ def test_reshape_and_cache_flash(
     else:
         torch.testing.assert_close(key_cache, cloned_key_cache)
         torch.testing.assert_close(value_cache, cloned_value_cache)
-
-
-@pytest.mark.parametrize("num_tokens", NUM_TOKENS)
-@pytest.mark.parametrize("num_heads", NUM_HEADS)
-@pytest.mark.parametrize("head_size", HEAD_SIZES)
-@pytest.mark.parametrize("block_size", BLOCK_SIZES)
-@pytest.mark.parametrize("num_blocks", NUM_BLOCKS)
-@pytest.mark.parametrize("dtype", DTYPES)
-@pytest.mark.parametrize("seed", SEEDS)
-@pytest.mark.parametrize("device", CUDA_DEVICES)
-@pytest.mark.parametrize("kv_cache_dtype", KV_CACHE_DTYPE)
-@torch.inference_mode()
-def test_reshape_and_cache_xqa(
-    kv_cache_factory_xqa,
-    num_tokens: int,
-    num_heads: int,
-    head_size: int,
-    block_size: int,
-    num_blocks: int,
-    dtype: torch.dtype,
-    seed: int,
-    device: str,
-    kv_cache_dtype: str,
-) -> None:
-    random.seed(seed)
-    torch.random.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.set_default_device(device)
-
-    # Create a random slot mapping.
-    num_slots = block_size * num_blocks
-    slot_mapping_lst = random.sample(range(num_slots), num_tokens)
-    slot_mapping = torch.tensor(slot_mapping_lst,
-                                dtype=torch.long,
-                                device=device)
-
-    qkv = torch.randn(num_tokens,
-                      3,
-                      num_heads,
-                      head_size,
-                      dtype=dtype,
-                      device=device)
-    _, key, value = qkv.unbind(dim=1)
-
-    # Create the KV caches.
-    kv_caches = kv_cache_factory_xqa(
-        num_blocks,
-        block_size,
-        1,
-        num_heads,
-        head_size,
-        kv_cache_dtype,
-        dtype,
-        device=device,
-    )
-    kv_cache = kv_caches[0].contiguous()
-    del kv_caches
-
-    # Clone the KV caches.
-    if kv_cache_dtype == "fp8":
-        cloned_kv_cache = torch.empty_like(kv_cache, dtype=torch.float16)
-        ops.convert_fp8(cloned_kv_cache, kv_cache)
-    else:
-        cloned_kv_cache = kv_cache.clone()
-
-    # Using default kv_scale
-    k_scale = v_scale = 1.0
-
-    # Call the reshape_and_cache_xqa kernel.
-    ops.reshape_and_cache_xqa(key, value, kv_cache,
-                              slot_mapping, kv_cache_dtype, k_scale, v_scale)
-
-    if kv_cache_dtype == "fp8":
-        result_kv_cache = torch.empty_like(kv_cache, dtype=torch.float16)
-        ops.convert_fp8(result_kv_cache, kv_cache)
-
-    # Run the reference implementation.
-    # kv_cache layout is [num_blocks, 2, num_heads, block_size, head_size]
-    block_indicies = torch.div(slot_mapping, block_size, rounding_mode="floor")
-    block_indicies_lst = block_indicies.cpu().tolist()
-
-    block_offsets = slot_mapping % block_size
-    block_offsets_lst = block_offsets.cpu().tolist()
-    for i in range(num_tokens):
-        block_idx = block_indicies_lst[i]
-        block_offset = block_offsets_lst[i]
-        cloned_kv_cache[block_idx, 0, :, block_offset, :] = key[i]
-        cloned_kv_cache[block_idx, 1, :, block_offset, :] = value[i]
-
-    if kv_cache_dtype == "fp8":
-        torch.testing.assert_close(result_kv_cache,
-                                   cloned_kv_cache,
-                                   atol=0.001,
-                                   rtol=0.1)
-    else:
-        torch.testing.assert_close(kv_cache, cloned_kv_cache)
 
 
 @pytest.mark.parametrize("direction", COPYING_DIRECTION)
