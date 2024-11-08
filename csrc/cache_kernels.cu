@@ -311,7 +311,7 @@ void reshape_and_cache_flash(
     torch::Tensor& value_cache,
     torch::Tensor& slot_mapping,  // [num_tokens]
     const std::string& kv_cache_dtype, const double k_scale,
-    const double v_scale, bool is_NHD) {
+    const double v_scale, const bool is_NHD) {
   // For key/value_cache layout:
   // - NHD: [num_blocks, block_size, num_heads, head_size]
   // - HND: [num_blocks, num_heads, block_size, head_size]
