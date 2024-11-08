@@ -1,6 +1,7 @@
 from typing import (TYPE_CHECKING, Any, Dict, Generic, Iterable, List, Literal,
                     Optional, Tuple, Union, cast)
 
+import torch
 from typing_extensions import NotRequired, TypedDict, TypeVar
 
 if TYPE_CHECKING:
@@ -49,12 +50,26 @@ class TokensPrompt(TypedDict):
     """
 
 
-SingletonPrompt = Union[str, TextPrompt, TokensPrompt]
+class EmbedsPrompt(TypedDict):
+    """Schema for a tokenized prompt."""
+
+    prompt_embeds: torch.Tensor
+    """Embeddings of the prompt to pass to the model."""
+
+    multi_modal_data: NotRequired["MultiModalDataDict"]
+    """
+    Optional multi-modal data to pass to the model,
+    if the model supports it.
+    """
+
+
+SingletonPrompt = Union[str, TextPrompt, TokensPrompt, EmbedsPrompt]
 """
 Set of possible schemas for a single prompt:
 
 - A text prompt (:class:`str` or :class:`TextPrompt`)
 - A tokenized prompt (:class:`TokensPrompt`)
+- Embeddings of a prompt (:class:`EmbedsPrompt`)
 
 Note that "singleton" is as opposed to a data structure
 which encapsulates multiple prompts, i.e. of the sort
@@ -176,10 +191,40 @@ def token_inputs(
     return inputs
 
 
-DecoderOnlyInputs = TokenInputs
+class EmbedInputs(TypedDict):
+    """Represents embedding-based inputs."""
+
+    type: Literal["embed"]
+    """The type of inputs."""
+
+    prompt_embeds: torch.Tensor
+    """The embeddings of the prompt."""
+
+    multi_modal_data: NotRequired["MultiModalDataDict"]
+    """
+    Optional multi-modal data to pass to the model,
+    if the model supports it.
+    """
+
+
+def embed_inputs(
+    prompt_embeds: torch.Tensor,
+    multi_modal_data: Optional["MultiModalDataDict"] = None,
+) -> EmbedInputs:
+    """Construct :class:`EmbedInputs` from optional values."""
+    inputs = EmbedInputs(type="embed", prompt_embeds=prompt_embeds)
+
+    if multi_modal_data is not None:
+        inputs["multi_modal_data"] = multi_modal_data
+
+    return inputs
+
+
+DecoderOnlyInputs = Union[TokenInputs, EmbedInputs]
 """
 The inputs in :class:`~vllm.LLMEngine` before they are
 passed to the model executor.
+
 This specifies the data required for decoder-only models.
 """
 
@@ -198,7 +243,7 @@ class EncoderDecoderInputs(TypedDict):
     """The inputs for the decoder portion."""
 
 
-SingletonInputs = TokenInputs
+SingletonInputs = Union[TokenInputs, EmbedInputs]
 """
 A processed :class:`SingletonPrompt` which can be passed to
 :class:`vllm.sequence.Sequence`.

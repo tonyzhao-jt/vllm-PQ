@@ -9,7 +9,7 @@ from functools import cached_property, reduce
 from typing import (TYPE_CHECKING, Any, Callable, DefaultDict, Dict, List,
                     Mapping, Optional)
 from typing import Sequence as GenericSequence
-from typing import Set, Tuple, Union
+from typing import Set, Tuple, Union, overload
 
 import msgspec
 import torch
@@ -144,20 +144,21 @@ class SequenceDataDelta(
 class SequenceData(msgspec.Struct,
                    omit_defaults=True):  # type: ignore[call-arg]
     """Data associated with a sequence.
-
     Args:
         prompt_token_ids: The token IDs of the prompt.
+        prompt_embeds: The embeddings of the prompt.
         output_token_ids: The token IDs of the output. Set to an empty list if
             None.
-
     Attributes:
         prompt_token_ids: The token IDs of the prompt.
+        prompt_embeds: The embeddings of the prompt.
         output_token_ids: The token IDs of the output.
         cumulative_logprob: The cumulative log probability of the output.
     """
     # NOTE: we cannot use Union[List, array] because msgspec cannot support
     # union of 2 list types.
     _prompt_token_ids: array
+    _prompt_embeds: Optional[torch.Tensor] = None
     _output_token_ids: array = msgspec.field(
         default_factory=lambda: array(VLLM_TOKEN_ID_ARRAY_TYPE, []))
 
@@ -169,11 +170,9 @@ class SequenceData(msgspec.Struct,
     _num_computed_tokens: int = 0
     _stage: SequenceStage = SequenceStage.PREFILL
     _cached_all_token_ids: List[int] = msgspec.field(default_factory=list)
-
     # It is used to get delta input. It is reset when `get_delta_and_reset`
     # is called.
     _new_appended_tokens: List[int] = msgspec.field(default_factory=list)
-
     # It is used to compute mrope_position_ids.
     _mrope_position_delta: Optional[int] = None
 
@@ -201,6 +200,8 @@ class SequenceData(msgspec.Struct,
     def from_seqs(
         prompt_token_ids: GenericSequence[int],
         output_token_ids: Optional[GenericSequence[int]] = None,
+        *,
+        prompt_embeds: Optional[torch.Tensor] = None,
     ) -> "SequenceData":
         """
         Construct a :class:`SequenceData` instance from prompt and output
@@ -210,13 +211,15 @@ class SequenceData(msgspec.Struct,
                                      prompt_token_ids)
 
         if output_token_ids is None:
-            return SequenceData(prompt_token_ids_arr)
+            return SequenceData(prompt_token_ids_arr,
+                                _prompt_embeds=prompt_embeds)
 
         output_token_ids_arr = array(VLLM_TOKEN_ID_ARRAY_TYPE,
                                      output_token_ids)
 
         return SequenceData(prompt_token_ids_arr,
-                            _output_token_ids=output_token_ids_arr)
+                            _output_token_ids=output_token_ids_arr,
+                            _prompt_embeds=prompt_embeds)
 
     def __post_init__(self) -> None:
         assert self._prompt_token_ids.typecode == "l"
@@ -239,14 +242,13 @@ class SequenceData(msgspec.Struct,
     def prompt_token_ids(self) -> Tuple[int, ...]:
         return self._prompt_token_ids_tuple
 
-    @prompt_token_ids.setter
-    def prompt_token_ids(self, new_prompt_token_ids) -> None:
-        raise NotImplementedError
+    @property
+    def prompt_embeds(self) -> Optional[torch.Tensor]:
+        return self._prompt_embeds
 
     @property
     def prompt_token_ids_array(self) -> array:
         """Return the prompt token ids in array type.
-
         Note that the array is in "I" type, and it is not compatible
         with torch.long (2 bytes vs 4 bytes). So beware of the usage.
         """
@@ -410,7 +412,15 @@ class Sequence:
         self.lora_request = lora_request
         self.prompt_adapter_request = prompt_adapter_request
 
-        self.data = SequenceData.from_seqs(self.prompt_token_ids)
+        data: SequenceData
+        if self.prompt_token_ids:
+            data = SequenceData.from_seqs(self.prompt_token_ids)
+        else:
+            assert isinstance(self.prompt_embeds, torch.Tensor)
+            data = SequenceData.from_seqs([], prompt_embeds=self.prompt_embeds)
+
+        self.data = data
+
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
 
@@ -438,6 +448,9 @@ class Sequence:
         if inputs["type"] == "token":
             return inputs.get("prompt")
 
+        if inputs["type"] == "embed":
+            return None
+
         assert_never(inputs)
 
     @cached_property
@@ -446,6 +459,9 @@ class Sequence:
 
         if inputs["type"] == "token":
             return inputs.get("prompt_token_ids", [])
+
+        if inputs["type"] == "embed":
+            return []
 
         assert_never(inputs)
 
@@ -456,6 +472,9 @@ class Sequence:
         if inputs["type"] == "token":
             return None
 
+        if inputs["type"] == "embed":
+            return inputs.get("prompt_embeds", [])
+
         assert_never(inputs)
 
     @cached_property
@@ -464,6 +483,21 @@ class Sequence:
 
         if inputs["type"] == "token":
             return inputs.get("multi_modal_data", {})
+
+        if inputs["type"] == "embed":
+            return inputs.get("multi_modal_data", {})
+
+        assert_never(inputs)
+
+    @property
+    def multi_modal_placeholders(self) -> MultiModalPlaceholderDict:
+        inputs = self.inputs
+
+        if inputs["type"] == "token":
+            return inputs.get("multi_modal_placeholders", {})
+
+        if inputs["type"] == "embed":
+            return {}
 
         assert_never(inputs)
 
@@ -474,14 +508,8 @@ class Sequence:
         if inputs["type"] == "token":
             return inputs.get("mm_processor_kwargs", {})
 
-        assert_never(inputs)
-
-    @property
-    def multi_modal_placeholders(self) -> MultiModalPlaceholderDict:
-        inputs = self.inputs
-
-        if inputs["type"] == "token":
-            return inputs.get("multi_modal_placeholders", {})
+        if inputs["type"] == "embed":
+            return {}
 
         assert_never(inputs)
 
@@ -691,6 +719,12 @@ class SequenceGroup:
     @property
     def prompt_token_ids(self) -> List[int]:
         return self.first_seq.prompt_token_ids
+
+    @property
+    def prompt_embeds(self) -> Optional[torch.Tensor]:
+        # All sequences in the group should have the same prompt.
+        # We use the prompt of an arbitrary sequence.
+        return self.seqs[0].prompt_embeds
 
     @property
     def encoder_prompt(self) -> Optional[str]:
@@ -906,7 +940,7 @@ class SequenceGroupMetadata(
         multi_modal_data: Multi modal data.
         mm_processor_kwargs: Multimodal input processor / mapper overrides.
         encoder_seq_data: Optional sequence data for encoder prompt
-                          (SequenceGroup.encoder_seq). Should be None 
+                          (SequenceGroup.encoder_seq). Should be None
                           unless you are working with an encoder/decoder
                           model.
         cross_block_table: Optional cross-attention block table associated
@@ -1091,11 +1125,24 @@ class IntermediateTensors:
 
     tensors: Dict[str, torch.Tensor]
 
-    def __getitem__(self, key: Union[str, slice]):
+    @overload
+    def __getitem__(self, key: str) -> torch.Tensor:
+        ...
+
+    @overload
+    def __getitem__(self, key: slice) -> "IntermediateTensors":
+        ...
+
+    def __getitem__(
+        self,
+        key: Union[str, slice],
+    ) -> Union[torch.Tensor, "IntermediateTensors"]:
         if isinstance(key, str):
             return self.tensors[key]
-        elif isinstance(key, slice):
+        if isinstance(key, slice):
             return self.__class__({k: v[key] for k, v in self.tensors.items()})
+
+        assert_never(key)
 
     def __setitem__(self, key: str, value):
         self.tensors[key] = value

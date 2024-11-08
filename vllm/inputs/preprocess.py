@@ -1,6 +1,7 @@
 import asyncio
 from typing import List, Optional
 
+import torch
 from typing_extensions import assert_never
 
 from vllm.config import ModelConfig
@@ -11,7 +12,8 @@ from vllm.transformers_utils.tokenizer_group import BaseTokenizerGroup
 from vllm.utils import print_warning_once
 
 from .data import (DecoderOnlyInputs, EncoderDecoderInputs, ProcessorInputs,
-                   PromptType, SingletonInputs, SingletonPrompt, token_inputs)
+                   PromptType, SingletonInputs, SingletonPrompt, embed_inputs,
+                   token_inputs)
 from .parse import is_explicit_encoder_decoder_prompt, parse_singleton_prompt
 
 logger = init_logger(__name__)
@@ -169,6 +171,13 @@ class InputPreprocessor:
 
         return prompt_token_ids
 
+    def _validate_embed_inputs(self, prompt_embeds: torch.Tensor):
+        if len(prompt_embeds.shape) != 2:
+            raise ValueError("Embeddings should be a 2D input with shape "
+                             "`(num_tokens, embed_dim)`")
+
+        return prompt_embeds
+
     def _tokenize_prompt(
         self,
         prompt: str,
@@ -268,6 +277,17 @@ class InputPreprocessor:
                 mm_processor_kwargs=mm_processor_kwargs,
             )
 
+        if parsed["type"] == "embeds":
+            embeds_content = parsed["content"]
+
+            prompt_embeds = embeds_content["prompt_embeds"]
+            multi_modal_data = embeds_content.get("multi_modal_data")
+
+            return embed_inputs(
+                prompt_embeds=prompt_embeds,
+                multi_modal_data=multi_modal_data,
+            )
+
         assert_never(parsed)
 
     async def _prompt_to_llm_inputs_async(
@@ -324,6 +344,17 @@ class InputPreprocessor:
                 mm_processor_kwargs=mm_processor_kwargs,
             )
 
+        if parsed["type"] == "embeds":
+            embeds_content = parsed["content"]
+
+            prompt_embeds = embeds_content["prompt_embeds"]
+            multi_modal_data = embeds_content.get("multi_modal_data")
+
+            return embed_inputs(
+                prompt_embeds=prompt_embeds,
+                multi_modal_data=multi_modal_data,
+            )
+
         assert_never(parsed)
 
     def _build_enc_dec_llm_inputs(
@@ -333,6 +364,11 @@ class InputPreprocessor:
     ) -> EncoderDecoderInputs:
         if encoder_inputs["type"] == "token":
             pass
+        elif encoder_inputs["type"] == "embed":
+            raise NotImplementedError("Embedding inputs are not supported for "
+                                      "encoder-decoder models yet")
+            encoder_inputs["prompt_embeds"] = self._validate_embed_inputs(
+                encoder_inputs["prompt_embeds"])
         else:
             assert_never(encoder_inputs)
 
@@ -348,6 +384,11 @@ class InputPreprocessor:
             if "multi_modal_data" in decoder_inputs:
                 raise ValueError("Multi-modal decoder inputs of encoder-"
                                  "decoder models are not supported yet")
+        elif decoder_inputs["type"] == "embed":
+            raise NotImplementedError("Embedding inputs are not supported for "
+                                      "encoder-decoder models yet")
+            decoder_inputs["prompt_embeds"] = self._validate_embed_inputs(
+                decoder_inputs["prompt_embeds"])
         else:
             assert_never(encoder_inputs)
 
@@ -465,6 +506,9 @@ class InputPreprocessor:
                 prompt_inputs["prompt_token_ids"],
                 prompt_adapter_request=prompt_adapter_request,
             )
+        elif prompt_inputs["type"] == "embed":
+            prompt_inputs["prompt_embeds"] = self._validate_embed_inputs(
+                prompt_inputs["prompt_embeds"])
         else:
             assert_never(prompt_inputs)
 

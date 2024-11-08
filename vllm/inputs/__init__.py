@@ -1,7 +1,8 @@
-from .data import (DecoderOnlyInputs, EncoderDecoderInputs,
-                   ExplicitEncoderDecoderPrompt, ProcessorInputs, PromptType,
-                   SingletonInputs, SingletonPrompt, TextPrompt, TokenInputs,
-                   TokensPrompt, build_explicit_enc_dec_prompt,
+from .data import (DecoderOnlyInputs, EmbedInputs, EmbedsPrompt,
+                   EncoderDecoderInputs, ExplicitEncoderDecoderPrompt,
+                   ProcessorInputs, PromptType, SingletonInputs,
+                   SingletonPrompt, TextPrompt, TokenInputs, TokensPrompt,
+                   build_explicit_enc_dec_prompt, embed_inputs,
                    to_enc_dec_tuple_list, token_inputs, zip_enc_dec_prompts)
 from .registry import DummyData, InputContext, InputRegistry
 
@@ -17,11 +18,14 @@ See also:
 __all__ = [
     "TextPrompt",
     "TokensPrompt",
+    "EmbedsPrompt",
     "PromptType",
     "SingletonPrompt",
     "ExplicitEncoderDecoderPrompt",
     "TokenInputs",
     "token_inputs",
+    "EmbedInputs",
+    "embed_inputs",
     "DecoderOnlyInputs",
     "EncoderDecoderInputs",
     "ProcessorInputs",

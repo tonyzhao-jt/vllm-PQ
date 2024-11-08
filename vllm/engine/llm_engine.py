@@ -7,7 +7,7 @@ from functools import partial
 from typing import (TYPE_CHECKING, Any, Callable, ClassVar, Deque, Dict,
                     Iterable, List, Mapping, NamedTuple, Optional)
 from typing import Sequence as GenericSequence
-from typing import Set, Type, Union, cast, overload
+from typing import Set, Tuple, Type, Union, cast, overload
 
 import torch
 from typing_extensions import TypeVar
@@ -60,6 +60,7 @@ from vllm.usage.usage_lib import (UsageContext, is_usage_stats_enabled,
                                   usage_message)
 from vllm.utils import Counter, Device, deprecate_kwargs, weak_bind
 from vllm.version import __version__ as VLLM_VERSION
+from vllm.worker.worker_base import WorkerWrapperBase
 
 logger = init_logger(__name__)
 _LOCAL_LOGGING_INTERVAL_SEC = 5
@@ -1983,6 +1984,17 @@ class LLMEngine:
     def is_encoder_decoder_model(self):
         return self.input_preprocessor.is_encoder_decoder_model()
 
+    def _support_prompt_embeds(self) -> Tuple[bool, str]:
+        if self.speculative_config is not None:
+            return False, "Speculative decoding does not support prompt_embeds."
+        driver_worker = self.model_executor.driver_worker
+        model_runner = driver_worker.worker.model_runner if isinstance(
+            driver_worker, WorkerWrapperBase) else driver_worker.model_runner
+        if model_runner.model_supports_input_embeds:
+            return True, ""
+        return False, (f"Model {self.model_config.model} does not support "
+                       "input embeddings, but prompt_embeds was provided.")
+
     def _validate_model_inputs(self, inputs: ProcessorInputs,
                                lora_request: Optional[LoRARequest]):
         if is_encoder_decoder_inputs(inputs):
@@ -1994,8 +2006,22 @@ class LLMEngine:
             prompt_inputs = inputs
 
         prompt_ids = prompt_inputs.get("prompt_token_ids")
+        prompt_embeds = prompt_inputs.get("prompt_embeds")
 
-        if prompt_ids is None or len(prompt_ids) == 0:
+        if prompt_ids is None:
+            if prompt_embeds is None:
+                raise ValueError("You must provide a prompt")
+            else:
+                self._validate_prompt_embeds(prompt_embeds)
+        else:
+            if prompt_embeds is None:
+                self._validate_prompt_ids(prompt_ids)
+            else:
+                raise ValueError("You can only provide either tokens or "
+                                 "embeddings, not both")
+
+    def _validate_prompt_ids(self, prompt_ids: List[int]):
+        if len(prompt_ids) == 0:
             raise ValueError("Prompt cannot be empty")
 
         if self.model_config.is_multimodal_model:
@@ -2013,6 +2039,14 @@ class LLMEngine:
             # TODO: Find out how many placeholder tokens are there so we can
             # check that chunked prefill does not truncate them
             # max_batch_len = self.scheduler_config.max_num_batched_tokens
+
+    def _validate_prompt_embeds(self, prompt_embeds: torch.Tensor):
+        if len(prompt_embeds) == 0:
+            raise ValueError("Prompt cannot be empty")
+
+        support_prompt_embeds, error_msg = self._support_prompt_embeds()
+        if not support_prompt_embeds:
+            raise ValueError(error_msg)
 
     def _build_logits_processors(
             self, sampling_params: SamplingParams,

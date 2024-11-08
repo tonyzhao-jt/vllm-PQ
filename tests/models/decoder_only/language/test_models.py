@@ -53,9 +53,22 @@ def test_models(
         hf_outputs = hf_model.generate_greedy_logprobs_limit(
             example_prompts, max_tokens, num_logprobs)
 
+        prompt_embeds = []
+        prompt_token_ids = []
+        for prompt in example_prompts:
+            token_ids = hf_model.tokenizer(prompt,
+                                           return_tensors="pt").input_ids.to(
+                                               hf_model.model.device)
+            prompt_token_ids.append(token_ids)
+            prompt_embeds.append(
+                hf_model.model.get_input_embeddings()(token_ids).squeeze(0))
+
     with vllm_runner(model, dtype=dtype) as vllm_model:
         vllm_outputs = vllm_model.generate_greedy_logprobs(
             example_prompts, max_tokens, num_logprobs)
+        vllm_outputs_from_embeds = vllm_model.generate_greedy_logprobs(
+            prompt_embeds, max_tokens, num_logprobs)
+
         # This test is for verifying whether the model's extra_repr
         # can be printed correctly.
         print(vllm_model.model.llm_engine.model_executor.driver_worker.
@@ -66,4 +79,11 @@ def test_models(
         outputs_1_lst=vllm_outputs,
         name_0="hf",
         name_1="vllm",
+    )
+
+    check_logprobs_close(
+        outputs_0_lst=vllm_outputs,
+        outputs_1_lst=vllm_outputs_from_embeds,
+        name_0="vllm",
+        name_1="vllm_from_embeds",
     )
