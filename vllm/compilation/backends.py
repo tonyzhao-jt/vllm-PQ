@@ -341,11 +341,9 @@ def async_rewrite(graph: fx.Graph):
     return graph
 
 
-collective_fusion_pass: Optional[CollectiveFusionPass] = None
-
 def wrap_inductor(graph,
                   example_inputs,
-                  additional_inductor_config,
+                  additional_inductor_config = None,
                   do_logging=False,
                   runtime_shape: Optional[int] = None,
                   use_inductor: bool = True):
