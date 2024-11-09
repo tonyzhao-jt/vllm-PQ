@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import torch
 import torch.fx as fx
-from typing import Tuple, List, Optional
 
 import vllm.envs as envs
 from vllm.config import CompilationConfig
@@ -343,7 +342,7 @@ def async_rewrite(graph: fx.Graph):
 
 def wrap_inductor(graph,
                   example_inputs,
-                  additional_inductor_config = None,
+                  additional_inductor_config=None,
                   do_logging=False,
                   runtime_shape: Optional[int] = None,
                   use_inductor: bool = True):
