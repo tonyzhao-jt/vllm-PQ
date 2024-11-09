@@ -342,7 +342,7 @@ def async_rewrite(graph: fx.Graph):
 
 def wrap_inductor(graph,
                   example_inputs,
-                  additional_inductor_config=None,
+                  additional_inductor_config: Optional[Dict] = None,
                   do_logging=False,
                   runtime_shape: Optional[int] = None,
                   use_inductor: bool = True):
@@ -360,7 +360,7 @@ def wrap_inductor(graph,
     from torch._inductor import config
 
     torch._inductor.config._micro_pipeline_tp = True
-    # Set to False to avoid infinite recursion logging
+    # Set to False to avoid infinite recursion logging?
     torch._inductor.config.implicit_fallbacks = True
 
     current_config = config.shallow_copy_dict()
