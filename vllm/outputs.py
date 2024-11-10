@@ -41,15 +41,6 @@ class CompletionOutput:
     def finished(self) -> bool:
         return self.finish_reason is not None
 
-    def __repr__(self) -> str:
-        return (f"CompletionOutput(index={self.index}, "
-                f"text={self.text!r}, "
-                f"token_ids={self.token_ids}, "
-                f"cumulative_logprob={self.cumulative_logprob}, "
-                f"logprobs={self.logprobs}, "
-                f"finish_reason={self.finish_reason}, "
-                f"stop_reason={self.stop_reason})")
-
 
 @dataclass
 class EmbeddingOutput:
@@ -62,11 +53,8 @@ class EmbeddingOutput:
 
     embedding: List[float]
 
-    def __repr__(self) -> str:
-        return (f"EmbeddingOutput("
-                f"embedding={len(self.embedding)})")
 
-
+@dataclass
 class RequestOutput:
     """The output data of a completion request to the LLM.
 
@@ -89,29 +77,16 @@ class RequestOutput:
                                   None if decoder-only
     """
 
-    def __init__(
-        self,
-        request_id: str,
-        prompt: Optional[str],
-        prompt_token_ids: Optional[List[int]],
-        prompt_logprobs: Optional[PromptLogprobs],
-        outputs: List[CompletionOutput],
-        finished: bool,
-        metrics: Optional[RequestMetrics] = None,
-        lora_request: Optional[LoRARequest] = None,
-        encoder_prompt: Optional[str] = None,
-        encoder_prompt_token_ids: Optional[List[int]] = None,
-    ) -> None:
-        self.request_id = request_id
-        self.prompt = prompt
-        self.prompt_token_ids = prompt_token_ids
-        self.prompt_logprobs = prompt_logprobs
-        self.outputs = outputs
-        self.finished = finished
-        self.metrics = metrics
-        self.lora_request = lora_request
-        self.encoder_prompt = encoder_prompt
-        self.encoder_prompt_token_ids = encoder_prompt_token_ids
+    request_id: str
+    prompt: str
+    prompt_token_ids: List[int]
+    prompt_logprobs: Optional[PromptLogprobs]
+    outputs: List[CompletionOutput]
+    finished: bool
+    metrics: Optional[RequestMetrics] = None
+    lora_request: Optional[LoRARequest] = None
+    encoder_prompt: Optional[str] = None
+    encoder_prompt_token_ids: Optional[List[int]] = None
 
     @classmethod
     def from_seq_group(
@@ -266,6 +241,7 @@ class RequestOutput:
                 f"lora_request={self.lora_request})")
 
 
+@dataclass
 class EmbeddingRequestOutput:
     """
     The output data of an embedding request to the LLM.
@@ -276,13 +252,11 @@ class EmbeddingRequestOutput:
         prompt_token_ids (List[int]): A list of token IDs used in the prompt.
         finished (bool): A flag indicating whether the embedding is completed.
     """
+    request_id: str
+    outputs: EmbeddingOutput
+    prompt_token_ids: List[int]
+    finished: bool
 
-    def __init__(self, request_id: str, outputs: "EmbeddingOutput",
-                 prompt_token_ids: List[int], finished: bool):
-        self.request_id = request_id
-        self.prompt_token_ids = prompt_token_ids
-        self.finished = finished
-        self.outputs = outputs
 
     @classmethod
     def from_seq_group(cls,
@@ -313,7 +287,6 @@ class EmbeddingRequestOutput:
 
 
 class RequestOutputFactory:
-
     @staticmethod
     def create(seq_group: SequenceGroup,
                seq_id_to_seq_group: Dict[str, SequenceGroupBase],
