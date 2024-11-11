@@ -1,5 +1,3 @@
-import enum
-from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
 import torch
@@ -11,21 +9,20 @@ from vllm.model_executor.layers.linear import (LinearBase, LinearMethodBase,
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.layers.quantization.kernels import (
-    MPLinearLayerConfig, BitBLASLinearKernel)
+    BitBLASLinearKernel, MPLinearLayerConfig)
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
-    check_bitblas_supported,
-    bitblas_repeat_scales_on_all_ranks,
-    verify_bitblas_supported,
-    BITBLAS_SUPPORTED_NUM_BITS as GPTQ_BITBLAS_SUPPORTED_NUM_BITS,
-    BITBLAS_SUPPORTED_SYM as GPTQ_BITBLAS_SUPPORTED_SYM,
-)
-
-from vllm.scalar_type import scalar_types
+    BITBLAS_SUPPORTED_NUM_BITS as GPTQ_BITBLAS_SUPPORTED_NUM_BITS)
+from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
+    BITBLAS_SUPPORTED_SYM as GPTQ_BITBLAS_SUPPORTED_SYM)
+from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
+    bitblas_repeat_scales_on_all_ranks, check_bitblas_supported,
+    verify_bitblas_supported)
 from vllm.model_executor.parameter import (ChannelQuantScaleParameter,
                                            GroupQuantScaleParameter,
                                            PackedColumnParameter,
                                            PackedvLLMParameter,
                                            RowvLLMParameter)
+from vllm.scalar_type import scalar_types
 
 logger = init_logger(__name__)
 
@@ -168,6 +165,10 @@ class GPTQBitBLASConfig(QuantizationConfig):
     def get_scaled_act_names(self) -> List[str]:
         return []
 
+    @property
+    def torch_storage_dtype(self) -> torch.dtype:
+        return self.TORCH_BITBLAS_STORAGE_DTYPE
+
     @classmethod
     def is_gptq_bitblas_compatible(cls, quant_config: Dict[str, Any]):
         # Extract data from quant config.
@@ -191,11 +192,6 @@ class GPTQBitBLASConfig(QuantizationConfig):
         return check_bitblas_supported(quant_type=cls.TYPE_MAP[(num_bits,
                                                                 sym)],
                                        group_size=group_size)
-
-
-class GPTQBitBLASState(Enum):
-    REPACK = enum.auto()
-    READY = enum.auto()
 
 
 class GPTQBitBLASLinearMethod(LinearMethodBase):
@@ -421,45 +417,7 @@ class GPTQBitBLASLinearMethod(LinearMethodBase):
         x: torch.Tensor,
         bias: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return self.kernel.apply_weights(layer, x, bias)
-
-    def apply(
-        self,
-        layer: torch.nn.Module,
-        x: torch.Tensor,
-        bias: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-
-        part_size_n = layer.output_size_per_partition
-        out_shape = x.shape[:-1] + (part_size_n, )
-
-        if layer.bitblas_state == GPTQBitBLASState.REPACK:
-            layer.bitblas_state = GPTQBitBLASState.READY
-
-            # Newly generated tensors need to replace existing tensors that are
-            # already registered as parameters by vLLM (and won't be freed)
-            def replace_tensor(name, new_t):
-                # It is important to use copy_() here since it ensures
-                # the same buffer is reused
-                getattr(layer, name).copy_(
-                    new_t.view(getattr(layer, name).dtype).view(
-                        getattr(layer, name).shape))
-                del new_t
-
-            # Repack weights
-            bitblas_qweight, bitblas_scales, bitblas_qzeros = (
-                self.repack_bitblas_from_gptq(
-                    layer.qweight,
-                    layer.scales,
-                    layer.qzeros,
-                ))
-            replace_tensor("qweight", bitblas_qweight)
-            replace_tensor("scales", bitblas_scales)
-            replace_tensor("qzeros", bitblas_qzeros)
-
-        output = self.bitblas_matmul(x, layer.qweight, layer.scales,
-                                     layer.qzeros)
-
+        out = self.kernel.apply_gptq_bitblas_linear(layer, x)
         if bias is not None:
-            output.add_(bias)  # In-place add
-        return output.reshape(out_shape)
+            out.add_(bias)
+        return out

@@ -7,13 +7,13 @@ from typing import Tuple
 import pytest
 import torch
 
+from vllm.model_executor.layers.quantization.bitblas import BitBLASLinearMethod
 from vllm.model_executor.layers.quantization.gptq import GPTQLinearMethod
-from vllm.model_executor.layers.quantization.gptq_marlin import (
-    GPTQMarlinLinearMethod)
 from vllm.model_executor.layers.quantization.gptq_bitblas import (
     GPTQBitBLASLinearMethod)
+from vllm.model_executor.layers.quantization.gptq_marlin import (
+    GPTQMarlinLinearMethod)
 from vllm.model_executor.layers.quantization.marlin import MarlinLinearMethod
-from vllm.model_executor.layers.quantization.bitblas import BitBLASLinearMethod
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     UnquantizedEmbeddingMethod)
 

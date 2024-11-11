@@ -1,14 +1,14 @@
 from typing import List, Optional, Type
 
 import vllm.envs as envs
+from vllm.model_executor.layers.quantization.kernels.bitblas import (
+    BitBLASLinearKernel)
 from vllm.model_executor.layers.quantization.kernels.exllama import (
     ExllamaLinearKernel)
 from vllm.model_executor.layers.quantization.kernels.machete import (
     MacheteLinearKernel)
 from vllm.model_executor.layers.quantization.kernels.marlin import (
     MarlinLinearKernel)
-from vllm.model_executor.layers.quantization.kernels.bitblas import (
-    BitBLASLinearKernel)
 from vllm.model_executor.layers.quantization.kernels.MPLinearKernel import (
     MPLinearKernel, MPLinearLayerConfig)
 from vllm.platforms import current_platform
