@@ -202,5 +202,4 @@ benchmarks/*.json
 
 # Linting
 actionlint
-
-debug
+shellcheck*/
