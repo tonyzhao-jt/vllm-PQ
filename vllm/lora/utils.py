@@ -23,7 +23,7 @@ from vllm.lora.layers import (BaseLayerWithLoRA, ColumnParallelLinearWithLoRA,
                               LogitsProcessorWithLoRA,
                               MergedColumnParallelLinearWithLoRA,
                               MergedQKVParallelLinearWithLora,
-                              QKVParallelLinearWithLora,
+                              ModulesToSaveWrapper, QKVParallelLinearWithLora,
                               ReplicatedLinearWithLoRA,
                               RowParallelLinearWithLoRA,
                               VocabParallelEmbeddingWithLoRA)
@@ -34,20 +34,14 @@ from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 logger = init_logger(__name__)
 
 _all_lora_classes: Set[Type[BaseLayerWithLoRA]] = {
-    VocabParallelEmbeddingWithLoRA,
-    ColumnParallelLinearWithLoRA,
-    MergedColumnParallelLinearWithLoRA,
-    QKVParallelLinearWithLora,
-    MergedQKVParallelLinearWithLora,
-    RowParallelLinearWithLoRA,
-    ReplicatedLinearWithLoRA,
-    LogitsProcessorWithLoRA,
-    ColumnParallelLinearWithShardedLoRA,
-    QKVParallelLinearWithShardedLora,
+    VocabParallelEmbeddingWithLoRA, ColumnParallelLinearWithLoRA,
+    MergedColumnParallelLinearWithLoRA, QKVParallelLinearWithLora,
+    MergedQKVParallelLinearWithLora, RowParallelLinearWithLoRA,
+    ReplicatedLinearWithLoRA, LogitsProcessorWithLoRA,
+    ColumnParallelLinearWithShardedLoRA, QKVParallelLinearWithShardedLora,
     MergedColumnParallelLinearWithShardedLoRA,
-    MergedQKVParallelLinearWithShardedLora,
-    RowParallelLinearWithShardedLoRA,
-    LinearScalingRotaryEmbeddingWithLora,
+    MergedQKVParallelLinearWithShardedLora, RowParallelLinearWithShardedLoRA,
+    LinearScalingRotaryEmbeddingWithLora, ModulesToSaveWrapper
 }
 
 
@@ -91,7 +85,10 @@ def replace_submodule(model: nn.Module, module_name: str,
     return new_module
 
 
-def parse_fine_tuned_lora_name(name: str) -> Tuple[str, bool]:
+def parse_fine_tuned_lora_name(
+        name: str,
+        enable_lora_modules_to_save: bool = False
+) -> Tuple[str, Optional[bool]]:
     """Parse the name of lora weights.
 
     args:
@@ -100,7 +97,8 @@ def parse_fine_tuned_lora_name(name: str) -> Tuple[str, bool]:
     return:
         Tuple(module_name, is_lora_a):
             module_name: the name of the module, e.g. model.dense1,
-            is_lora_a whether the tensor is lora_a or lora_b.
+            is_lora_a whether the tensor is lora_a or lora_b. 
+            None - if tensor is for ModulesToSaveWrapper
     """
     parts = name.split(".")
 
@@ -108,6 +106,16 @@ def parse_fine_tuned_lora_name(name: str) -> Tuple[str, bool]:
         if parts[-1] == "weight":
             if parts[-2] == "lora_A" or parts[-2] == "lora_B":
                 return ".".join(parts[2:-2]), parts[-2] == "lora_A"
+            if parts[-2] in ModulesToSaveWrapper.implemented_layers:
+
+                if not enable_lora_modules_to_save:
+                    error_msg = f"""enable_lora_modules_to_save is False, 
+                    but found tensor name {name} in LoRA checkpoint. 
+                    Set enable_lora_modules_to_save=True to process
+                    lm_head and embed_tokens as fully trained tensors"""
+                    raise ValueError(error_msg)
+
+                return '.'.join(parts[2:-1]), None
         elif parts[-1] == "lora_embedding_A" or parts[-1] == "lora_embedding_B":
             return ".".join(parts[2:-1]), parts[-1] == "lora_embedding_A"
 
