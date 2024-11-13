@@ -19,8 +19,6 @@ BITBLAS_SUPPORTED_SYM = [False, True]
 
 
 # For binary size and compile time, we don't support the same types for with and
-#  without runtime zero-point. We support common cases, i.e. AWQ and GPTQ.
-#  TODO: we may want to move this into the C++ so its closer to the actual impl
 def query_bitblas_supported_quant_types(has_zp: bool,
                                         device_capability: Optional[int] = None
                                         ):
@@ -29,7 +27,7 @@ def query_bitblas_supported_quant_types(has_zp: bool,
         device_capability = (-1 if capability_tuple is None else
                              capability_tuple.to_int())
 
-    if device_capability < 80:
+    if device_capability < 70:
         return []
 
     if has_zp:
