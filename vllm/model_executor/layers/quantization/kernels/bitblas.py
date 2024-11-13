@@ -5,9 +5,10 @@ import torch
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
+from vllm.model_executor.layers.quantization.utils import replace_parameter
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
     BITBLAS_OPTIMIZE_FEATURES, BITBLAS_SUPPORTED_GROUP_SIZES,
-    bitblas_is_k_full, bitblas_make_empty_g_idx, bitblas_sort_g_idx,
+    bitblas_make_empty_g_idx, bitblas_sort_g_idx,
     check_bitblas_supports_shape, query_bitblas_supported_quant_types,
     unpack_gptq_qweight, unpack_gptq_qzeros)
 
@@ -101,11 +102,6 @@ class BitBLASLinearKernel(MPLinearKernel):
     @classmethod
     def can_implement(cls,
                       c: MPLinearLayerConfig) -> Tuple[bool, Optional[str]]:
-        if c.zero_points:
-            return False, (
-                "Zero points currently not supported by "
-                " BitBLASLinearKernel. Will be added when AWQBitBLAS "
-                "is migrated over to using MPLinearKernel backend")
 
         quant_types = query_bitblas_supported_quant_types(c.zero_points)
         if c.weight_type not in quant_types:
@@ -130,8 +126,6 @@ class BitBLASLinearKernel(MPLinearKernel):
         device = getattr(layer, self.w_q_name).device
         c = self.config
         quant_config = self.quant_config
-        row_parallel = (c.partition_weight_shape[0] != c.full_weight_shape[0])
-        self.is_k_full = bitblas_is_k_full(c.has_g_idx, row_parallel)
 
         # Default names since bitblas requires empty parameters for these,
         # TODO: remove this requirement from bitblas (allow optional tensors)
@@ -172,10 +166,10 @@ class BitBLASLinearKernel(MPLinearKernel):
                 None if quant_config.is_sym else  # type: ignore[union-attr]
                 layer.qzeros,  # type: ignore[union-attr]
             ))
-        replace_tensor(self.w_q_name, bitblas_qweight)
-        replace_tensor(self.w_s_name, bitblas_scales)
+        replace_parameter(layer, self.w_q_name, bitblas_qweight)
+        replace_parameter(layer, self.w_s_name, bitblas_scales)
         if bitblas_qzeros is not None:
-            replace_tensor(self.w_zp_name, bitblas_qzeros)
+            replace_parameter(layer, self.w_zp_name, bitblas_qzeros)
 
     def configure_bitblas_matmul(
         self,
