@@ -11,12 +11,13 @@ from vllm.model_executor.layers.quantization.base_config import (
 from vllm.model_executor.layers.quantization.kernels import (
     BitBLASLinearKernel, MPLinearLayerConfig)
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
-    BITBLAS_SUPPORTED_NUM_BITS as GPTQ_BITBLAS_SUPPORTED_NUM_BITS)
-from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
+    BITBLAS_SUPPORTED_NUM_BITS as GPTQ_BITBLAS_SUPPORTED_NUM_BITS,
     BITBLAS_SUPPORTED_SYM as GPTQ_BITBLAS_SUPPORTED_SYM)
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
+    MINIMUM_BITBLAS_VERSION,
     bitblas_repeat_scales_on_all_ranks, check_bitblas_supported,
     verify_bitblas_supported)
+from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 from vllm.model_executor.parameter import (ChannelQuantScaleParameter,
                                            GroupQuantScaleParameter,
                                            PackedColumnParameter,
@@ -47,20 +48,21 @@ class GPTQBitBLASConfig(QuantizationConfig):
     ZEROS_MODE = "quantized"
 
     def __init__(self, weight_bits: int, group_size: int, desc_act: bool,
-                 is_sym: bool, quant_method: Optional[str]) -> None:
+                 is_sym: bool, quant_method: Optional[str], 
+                 lm_head_quantized: bool,) -> None:
 
         try:
             import bitblas
-            if bitblas.__version__ < "0.0.1.dev15":
+            if bitblas.__version__ < MINIMUM_BITBLAS_VERSION:
                 raise ImportError("bitblas version is wrong. Please "
-                                  "install bitblas>=0.0.1.dev15")
+                                  f"install bitblas>={MINIMUM_BITBLAS_VERSION}")
         except ImportError as e:
             bitblas_import_exception = e
             raise ValueError(
                 "Trying to use the bitblas backend, but could not import"
                 f"with the following error: {bitblas_import_exception}. "
                 "Please install bitblas through the following command: "
-                "`pip install bitblas>=0.0.1.dev15`"
+                f"`pip install bitblas>={MINIMUM_BITBLAS_VERSION}`"
             ) from bitblas_import_exception
 
         if desc_act and group_size == -1:
@@ -73,6 +75,7 @@ class GPTQBitBLASConfig(QuantizationConfig):
         self.desc_act = desc_act
         self.is_sym = is_sym
         self.quant_method = quant_method
+        self.lm_head_quantized = lm_head_quantized
 
         # Verify
         if self.weight_bits not in GPTQ_BITBLAS_SUPPORTED_NUM_BITS:
@@ -134,7 +137,10 @@ class GPTQBitBLASConfig(QuantizationConfig):
         desc_act = cls.get_from_keys(config, ["desc_act"])
         is_sym = cls.get_from_keys(config, ["sym"])
         quant_method = cls.get_from_keys(config, ["quant_method"])
-        return cls(weight_bits, group_size, desc_act, is_sym, quant_method)
+        lm_head_quantized = cls.get_from_keys_or(config, ["lm_head"],
+                                                 default=False)
+        return cls(weight_bits, group_size, desc_act, is_sym, quant_method,
+                   lm_head_quantized)
 
     @classmethod
     def override_quantization_method(cls, hf_quant_cfg,
@@ -158,12 +164,10 @@ class GPTQBitBLASConfig(QuantizationConfig):
 
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["GPTQBitBLASLinearMethod"]:
-        if isinstance(layer, LinearBase):
+        if isinstance(layer, LinearBase) or (isinstance(layer, ParallelLMHead)
+                                             and self.lm_head_quantized):
             return GPTQBitBLASLinearMethod(self)
         return None
-
-    def get_scaled_act_names(self) -> List[str]:
-        return []
 
     @property
     def torch_storage_dtype(self) -> torch.dtype:

@@ -5,6 +5,8 @@ import torch
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType, scalar_types
 
+MINIMUM_BITBLAS_VERSION = "0.0.1.dev15"
+
 BITBLAS_MIN_WEIGHT_SIZE_N = 16
 BITBLAS_MIN_WEIGHT_SIZE_K = 16
 GPTQ_BITBLAS_MAX_PARALLEL = 16

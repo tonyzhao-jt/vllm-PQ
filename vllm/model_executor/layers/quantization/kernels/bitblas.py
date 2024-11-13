@@ -103,6 +103,20 @@ class BitBLASLinearKernel(MPLinearKernel):
     def can_implement(cls,
                       c: MPLinearLayerConfig) -> Tuple[bool, Optional[str]]:
 
+        is_bitblas_installed = True
+
+        try:
+            import bitblas
+            if bitblas.__version__ < "0.0.1.dev15":
+                raise ImportError("bitblas version is wrong. Please "
+                                "install bitblas>=0.0.1.dev15")
+        except ImportError as e:
+            is_bitblas_installed = False
+
+        if not is_bitblas_installed:
+            return False, "bitblas is not installed. Please install bitblas "\
+                          "by running `pip install bitblas>=0.0.1.dev15`"
+
         quant_types = query_bitblas_supported_quant_types(c.zero_points)
         if c.weight_type not in quant_types:
             return False, (f"Quant type ({c.weight_type}) not supported by"
@@ -148,15 +162,6 @@ class BitBLASLinearKernel(MPLinearKernel):
         else:
             setattr(layer, self.w_zp_name, bitblas_make_empty_g_idx(device))
 
-        # Newly generated tensors need to replace existing tensors that are
-        # already registered as parameters by vLLM (and won't be freed)
-        def replace_tensor(name, new_t):
-            # It is important to use copy_() here since it ensures
-            # the same buffer is reused
-            getattr(layer, name).copy_(
-                new_t.view(getattr(layer, name).dtype).view(
-                    getattr(layer, name).shape))
-            del new_t
 
         # Repack weights
         bitblas_qweight, bitblas_scales, bitblas_qzeros = (
