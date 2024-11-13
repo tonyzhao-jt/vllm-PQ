@@ -2,8 +2,8 @@
 # Licensed under the MIT License.
 
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
-    MINIMUM_BITBLAS_VERSION,
-)
+    MINIMUM_BITBLAS_VERSION)
+
 try:
     import bitblas
     if bitblas.__version__ < MINIMUM_BITBLAS_VERSION:
@@ -11,11 +11,11 @@ try:
                           f"install bitblas>={MINIMUM_BITBLAS_VERSION}")
 except ImportError as e:
     bitblas_import_exception = e
-    raise ValueError(
-        "Trying to use the bitblas backend, but could not import"
-        f"with the following error: {bitblas_import_exception}. "
-        "Please install bitblas through the following command: "
-        f"`pip install bitblas>={MINIMUM_BITBLAS_VERSION}`") from bitblas_import_exception
+    raise ValueError("Trying to use the bitblas backend, but could not import"
+                     f"with the following error: {bitblas_import_exception}. "
+                     "Please install bitblas through the following command: "
+                     f"`pip install bitblas>={MINIMUM_BITBLAS_VERSION}`"
+                     ) from bitblas_import_exception
 
 from bitblas import Matmul, MatmulConfig, auto_detect_nvidia_target
 

@@ -7,11 +7,10 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
-from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
-    MINIMUM_BITBLAS_VERSION,
     BITBLAS_OPTIMIZE_FEATURES, BITBLAS_SUPPORTED_NUM_BITS,
-    BITBLAS_SUPPORTED_SYM)
+    BITBLAS_SUPPORTED_SYM, MINIMUM_BITBLAS_VERSION)
+from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 from vllm.model_executor.utils import set_weight_attrs
 
 logger = init_logger(__name__)
@@ -29,14 +28,21 @@ class BitBLASConfig(QuantizationConfig):
     # gptq_with_bitblas prefer "quantized implementation"
     ZEROS_MODE = "quantized"
 
-    def __init__(self, weight_bits: int, group_size: Optional[int],
-                 desc_act: Optional[bool], is_sym: Optional[bool],
-                 quant_method: Optional[str], lm_head_quantized: bool,) -> None:
+    def __init__(
+        self,
+        weight_bits: int,
+        group_size: Optional[int],
+        desc_act: Optional[bool],
+        is_sym: Optional[bool],
+        quant_method: Optional[str],
+        lm_head_quantized: bool,
+    ) -> None:
         try:
             import bitblas
             if bitblas.__version__ < MINIMUM_BITBLAS_VERSION:
-                raise ImportError("bitblas version is wrong. Please "
-                                  f"install bitblas>={MINIMUM_BITBLAS_VERSION}")
+                raise ImportError(
+                    "bitblas version is wrong. Please "
+                    f"install bitblas>={MINIMUM_BITBLAS_VERSION}")
         except ImportError as e:
             bitblas_import_exception = e
             raise ValueError(
@@ -150,10 +156,9 @@ class BitBLASConfig(QuantizationConfig):
     def get_quant_method(self, layer: torch.nn.Module,
                          prefix: str) -> Optional["BitBLASLinearMethod"]:
         if isinstance(layer, LinearBase) or (isinstance(layer, ParallelLMHead)
-                                        and self.lm_head_quantized):
+                                             and self.lm_head_quantized):
             return BitBLASLinearMethod(self)
         return None
-
 
 
 class BitBLASLinearMethod(LinearMethodBase):

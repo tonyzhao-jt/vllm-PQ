@@ -8,9 +8,9 @@ from vllm.model_executor.layers.quantization.base_config import (
 from vllm.model_executor.layers.quantization.utils import replace_parameter
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
     BITBLAS_OPTIMIZE_FEATURES, BITBLAS_SUPPORTED_GROUP_SIZES,
-    bitblas_make_empty_g_idx, bitblas_sort_g_idx,
-    check_bitblas_supports_shape, query_bitblas_supported_quant_types,
-    unpack_gptq_qweight, unpack_gptq_qzeros)
+    bitblas_make_empty_g_idx, bitblas_sort_g_idx, check_bitblas_supports_shape,
+    query_bitblas_supported_quant_types, unpack_gptq_qweight,
+    unpack_gptq_qzeros)
 
 from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
 
@@ -109,8 +109,8 @@ class BitBLASLinearKernel(MPLinearKernel):
             import bitblas
             if bitblas.__version__ < "0.0.1.dev15":
                 raise ImportError("bitblas version is wrong. Please "
-                                "install bitblas>=0.0.1.dev15")
-        except ImportError as e:
+                                  "install bitblas>=0.0.1.dev15")
+        except ImportError:
             is_bitblas_installed = False
 
         if not is_bitblas_installed:
@@ -161,7 +161,6 @@ class BitBLASLinearKernel(MPLinearKernel):
             raise NotImplementedError("Zero points not supported by BitBLAS")
         else:
             setattr(layer, self.w_zp_name, bitblas_make_empty_g_idx(device))
-
 
         # Repack weights
         bitblas_qweight, bitblas_scales, bitblas_qzeros = (
