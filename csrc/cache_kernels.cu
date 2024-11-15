@@ -230,11 +230,11 @@ __global__ void reshape_and_cache_flash_kernel(
     const int head_idx = i / head_size;
     const int head_offset = i % head_size;
     const int64_t tgt_key_value_idx =
-    block_idx * block_stride +
-    (is_NHD ? block_offset * num_heads * head_size + head_idx * head_size +
-                  head_offset
-            : head_idx * block_size * head_size + block_offset * head_size +
-                  head_offset);
+        block_idx * block_stride +
+        (is_NHD ? block_offset * num_heads * head_size + head_idx * head_size +
+                      head_offset
+                : head_idx * block_size * head_size + block_offset * head_size +
+                      head_offset);
     scalar_t tgt_key = key[src_key_idx];
     scalar_t tgt_value = value[src_value_idx];
     if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
@@ -305,10 +305,9 @@ void reshape_and_cache(
           value_stride, num_heads, head_size, block_size, k_scale, v_scale);
 
 void reshape_and_cache_flash(
-    torch::Tensor& key,        // [num_tokens, num_heads, head_size]
-    torch::Tensor& value,      // [num_tokens, num_heads, head_size]
-    torch::Tensor& key_cache,
-    torch::Tensor& value_cache,
+    torch::Tensor& key,    // [num_tokens, num_heads, head_size]
+    torch::Tensor& value,  // [num_tokens, num_heads, head_size]
+    torch::Tensor& key_cache, torch::Tensor& value_cache,
     torch::Tensor& slot_mapping,  // [num_tokens]
     const std::string& kv_cache_dtype, const double k_scale,
     const double v_scale, const bool is_NHD) {

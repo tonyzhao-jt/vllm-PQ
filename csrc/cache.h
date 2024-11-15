@@ -27,7 +27,7 @@ void reshape_and_cache_flash(torch::Tensor& key, torch::Tensor& value,
                              torch::Tensor& slot_mapping,
                              const std::string& kv_cache_dtype,
                              const double k_scale, const double v_scale,
-                             const bool is_NHD=true);
+                             const bool is_NHD = true);
 
 // Just for unittest
 void convert_fp8(torch::Tensor& dst_cache, torch::Tensor& src_cache,

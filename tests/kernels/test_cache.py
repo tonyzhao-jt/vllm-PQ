@@ -236,7 +236,7 @@ def test_reshape_and_cache_flash(
     slot_mapping = torch.tensor(slot_mapping_lst,
                                 dtype=torch.long,
                                 device=device)
-    is_NHD = True if kv_layout == "NHD" else False
+    is_NHD = kv_layout == "NHD"
     qkv = torch.randn(num_tokens,
                       3,
                       num_heads,
@@ -282,7 +282,8 @@ def test_reshape_and_cache_flash(
              k_scale, v_scale, is_NHD),
             cond=(head_size == HEAD_SIZES[0]))
     ops.reshape_and_cache_flash(key, value, key_cache, value_cache,
-                                slot_mapping, kv_cache_dtype, k_scale, v_scale, is_NHD)
+                                slot_mapping, kv_cache_dtype, k_scale, v_scale,
+                                is_NHD)
 
     if kv_cache_dtype == "fp8":
         result_key_cache = torch.empty_like(key_cache, dtype=torch.float16)
