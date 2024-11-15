@@ -16,7 +16,7 @@ Requirements
 Install released versions
 =========================
 
-You can install vLLM using pip:
+You can install vLLM, using pip:
 
 .. code-block:: console
 
@@ -24,8 +24,8 @@ You can install vLLM using pip:
     $ conda create -n myenv python=3.10 -y
     $ conda activate myenv
 
-    $ # Install vLLM with CUDA 12.1.
-    $ pip install vllm
+   $ # Install vLLM with CUDA 12.1.
+   $ pip install vllm
 
 .. note::
 
@@ -36,16 +36,16 @@ You can install vLLM using pip:
     As of now, vLLM's binaries are compiled with CUDA 12.1 and public PyTorch release versions by default.
     We also provide vLLM binaries compiled with CUDA 11.8 and public PyTorch release versions:
 
-    .. code-block:: console
+   .. code-block:: console
 
         $ # Install vLLM with CUDA 11.8.
         $ export VLLM_VERSION=0.6.1.post1
         $ export PYTHON_VERSION=310
         $ pip install https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}+cu118-cp${PYTHON_VERSION}-cp${PYTHON_VERSION}-manylinux1_x86_64.whl --extra-index-url https://download.pytorch.org/whl/cu118
 
-    In order to be performant, vLLM has to compile many cuda kernels. The compilation unfortunately introduces binary incompatibility with other CUDA versions and PyTorch versions, even for the same PyTorch version with different building configurations.
+   In order to be performant, vLLM has to compile many CUDA kernels. The compilation, unfortunately, introduces binary incompatibility with other CUDA versions and PyTorch versions, even for the same PyTorch version with different building configurations.
 
-    Therefore, it is recommended to install vLLM with a **fresh new** conda environment. If either you have a different CUDA version or you want to use an existing PyTorch installation, you need to build vLLM from source. See below for instructions.
+   Therefore, it is recommended to install vLLM with a **fresh new** conda environment. If either you have a different CUDA version or you want to use an existing PyTorch installation, you need to :ref:`build vLLM from source <build_from_source>`.
 
 
 .. _install-the-latest-code:
@@ -66,7 +66,7 @@ If you want to access the wheels for previous commits, you can specify the commi
     $ export VLLM_COMMIT=33f460b17a54acb3b6cc0b03f4a17876cff5eafd # use full commit hash from the main branch
     $ pip install https://vllm-wheels.s3.us-west-2.amazonaws.com/${VLLM_COMMIT}/vllm-1.0.0.dev-cp38-abi3-manylinux1_x86_64.whl
 
-Note that the wheels are built with Python 3.8 ABI (see `PEP 425 <https://peps.python.org/pep-0425/>`_ for more details about ABI), so **they are compatible with Python 3.8 and later**. The version string in the wheel file name (``1.0.0.dev``) is just a placeholder to have a unified URL for the wheels. The actual versions of wheels are contained in the wheel metadata. Although we don't support Python 3.8 any more (because PyTorch 2.5 dropped support for Python 3.8), the wheels are still built with Python 3.8 ABI to keep the same wheel name as before.
+Note that the wheels are built with Python 3.8 ABI (see `PEP 425 <https://peps.python.org/pep-0425/>`_ for more details about ABI), so **they are compatible with Python 3.8 and later**. The version string (``1.0.0.dev``) in the wheel file name is just a placeholder to have a unified URL for the wheels. The actual versions of wheels are contained in the wheel metadata. Although we don't support Python 3.8 any more (because PyTorch 2.5 dropped support for Python 3.8), the wheels are still built with Python 3.8 ABI to keep the same wheel name as before.
 
 Another way to access the latest code is to use the docker images:
 
@@ -148,7 +148,7 @@ If you want to modify C++ or CUDA code, you'll need to build vLLM from source. T
 .. tip::
 
     Building from source requires a lot of compilation. If you are building from source repeatedly, it's more efficient to cache the compilation results.
-    For example, you can install `ccache <https://github.com/ccache/ccache>`_ using ``conda install ccache`` or ``apt install ccache`` .
+    For example, you can install `ccache <https://github.com/ccache/ccache>`_ using ``conda install ccache`` or ``apt install ccache``.
     As long as ``which ccache`` command can find the ``ccache`` binary, it will be used automatically by the build system. After the first build, subsequent builds will be much faster.
 
 
@@ -174,7 +174,7 @@ Troubleshooting
 ~~~~~~~~~~~~~~~
 
 To avoid your system being overloaded, you can limit the number of compilation jobs
-to be run simultaneously, via the environment variable ``MAX_JOBS``. For example:
+to be run simultaneously, via the ``MAX_JOBS`` environment variable. For example:
 
 .. code-block:: console
 
