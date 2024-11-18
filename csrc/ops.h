@@ -152,6 +152,12 @@ void cutlass_scaled_mm_azp(torch::Tensor& out, torch::Tensor const& a,
                            torch::Tensor const& azp_adj,
                            c10::optional<torch::Tensor> const& azp,
                            c10::optional<torch::Tensor> const& bias);
+
+torch::Tensor fp_eXmY_linear_forward_cuda(int64_t EXPONENT, int64_t MANTISSA,
+                                          torch::Tensor _in_feats,
+                                          torch::Tensor _weights,
+                                          torch::Tensor _scales,
+                                          int64_t splitK = 1);
 #endif
 
 void static_scaled_int8_quant(torch::Tensor& out, torch::Tensor const& input,
