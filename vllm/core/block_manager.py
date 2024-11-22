@@ -57,15 +57,14 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             enabled. Defaults to False.
     """
 
-    def __init__(
-        self,
-        block_size: int,
-        num_gpu_blocks: int,
-        num_cpu_blocks: int,
-        watermark: float = 0.01,
-        sliding_window: Optional[int] = None,
-        enable_caching: bool = False,
-    ) -> None:
+    def __init__(self,
+                 block_size: int,
+                 num_gpu_blocks: int,
+                 num_cpu_blocks: int,
+                 watermark: float = 0.01,
+                 sliding_window: Optional[int] = None,
+                 enable_caching: bool = False,
+                 enable_host_memory_caching: bool = False) -> None:
         self.block_size = block_size
         self.num_total_gpu_blocks = num_gpu_blocks
         self.num_total_cpu_blocks = num_cpu_blocks
@@ -95,7 +94,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             num_gpu_blocks=num_gpu_blocks,
             num_cpu_blocks=num_cpu_blocks,
             block_size=block_size,
-        )
+            enable_host_memory_caching=enable_host_memory_caching)
 
         self.block_tables: Dict[SeqId, BlockTable] = {}
         self.cross_block_tables: Dict[EncoderSeqId, BlockTable] = {}
@@ -334,6 +333,14 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         # Track child seq
         self._computed_blocks_tracker.add_seq(child_seq.seq_id)
         self._last_access_blocks_tracker.add_seq(child_seq.seq_id)
+
+    def get_and_reset_swaps(
+            self) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+        """Returns the block mapping of both GPU to CPU and CPU to GPU.
+        """
+        mapping_gpu_to_cpu, mapping_cpu_to_gpu = \
+            self.block_allocator.get_and_reset_swaps()
+        return mapping_gpu_to_cpu, mapping_cpu_to_gpu
 
     def can_swap_in(self, seq_group: SequenceGroup,
                     num_lookahead_slots: int) -> AllocStatus:
