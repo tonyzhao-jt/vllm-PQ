@@ -359,9 +359,8 @@ def wrap_inductor(graph,
 
     from torch._inductor import config
 
+    # Enable support for symmetric memory ops in the inductor.
     torch._inductor.config._micro_pipeline_tp = True
-    # Set to False to avoid infinite recursion logging?
-    torch._inductor.config.implicit_fallbacks = True
 
     current_config = config.shallow_copy_dict()
     from torch._inductor.compile_fx import compile_fx
