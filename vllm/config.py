@@ -2168,7 +2168,8 @@ class CompilationConfig(BaseModel):
         - dump_graph_stages: list of stages for which we want to dump the graph.
             Each pass defines its own stages (before, after, maybe in-between).
         - dump_graph_dir: directory to dump the graphs. Default is .
-        - enable_collective_fusion: whether to enable the custom collective communication fusion pass.
+        - enable_collective_fusion: whether to enable the custom collective
+             communication fusion pass.
         - enable_fusion: whether to enable the custom fusion pass.
         - enable_reshape: whether to enable the custom reshape elimination pass.
             TODO better pass enabling system.
@@ -2187,7 +2188,8 @@ class CompilationConfig(BaseModel):
             compilation.
             """
             dict_ = self.model_dump(
-                include={"enable_fusion", "enable_reshape"})
+                include={"enable_collective_fusion", "enable_fusion",
+                         "enable_reshape"})
             encoded = json.dumps(dict_, sort_keys=True).encode("utf-8")
             return hashlib.sha256(encoded).digest()
 
@@ -2400,6 +2402,7 @@ class VllmConfig:
             self.compilation_config.custom_ops = ["none"]
             self.compilation_config.use_cudagraph = True
             self.compilation_config.use_inductor = True
+            self.compilation_config.pass_config.enable_collective_fusion = False
             self.compilation_config.pass_config.enable_fusion = False
             self.compilation_config.pass_config.enable_reshape = False
             self.compilation_config.level = CompilationLevel.PIECEWISE
