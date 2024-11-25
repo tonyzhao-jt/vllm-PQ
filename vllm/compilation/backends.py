@@ -26,6 +26,9 @@ def wrap_inductor(graph: fx.GraphModule,
                   do_logging: bool = False,
                   runtime_shape: Optional[int] = None,
                   use_inductor: bool = True):
+
+    print(f"WRAP_INDUCTOR {graph}")
+
     if not use_inductor:
         return graph
 
@@ -150,12 +153,15 @@ class PiecewiseCompileInterpreter(torch.fx.Interpreter):
         assert isinstance(target, str)
         output = super().call_module(target, args, kwargs)
 
+        print(f"TARGET {target}")
+
         if target in self.compile_submod_names:
             index = self.compile_submod_names.index(target)
             submod = self.fetch_attr(target)
             sym_shape_indices = [
                 i for i, x in enumerate(args) if isinstance(x, torch.SymInt)
             ]
+            print(f"COMPILE {target}")
             compiled_graph_for_general_shape = wrap_inductor(
                 submod,
                 args,
@@ -259,7 +265,7 @@ class VllmBackend:
         self.split_gm, self.piecewise_graphs = split_graph(
             graph, self.compilation_configs.splitting_ops)
 
-        dump_graph(self.compilation_configs.pass_config, graph.graph,
+        dump_graph(self.compilation_configs.pass_config, self.split_gm.graph,
                    "after_split_graph")
 
         from torch._dynamo.utils import lazy_format_graph_code
@@ -273,6 +279,8 @@ class VllmBackend:
             item.submod_name for item in self.piecewise_graphs
             if not item.is_splitting_graph
         ]
+
+        print(f"submod_names_to_compile = {submod_names_to_compile}")
 
         # propagate the split graph to the piecewise backend,
         # compile submodules with symbolic shapes
@@ -413,6 +421,7 @@ class PiecewiseBackend:
         if entry.need_to_compile and not entry.compiled:
             entry.compiled = True
             # args are real arguments
+            print(f"COMPILE ENTRY")
             entry.runnable = wrap_inductor(
                 self.graph,
                 args,
