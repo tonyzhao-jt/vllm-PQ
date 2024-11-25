@@ -15,14 +15,15 @@ from vllm.utils import weak_ref_tensors
 from .counter import compilation_counter
 from .inductor_pass import InductorPass
 from .pass_manager import PostGradPassManager
+from .utils import dump_graph
 
 logger = init_logger(__name__)
 
 
-def wrap_inductor(graph,
-                  example_inputs,
+def wrap_inductor(graph: fx.GraphModule,
+                  example_inputs: Sequence[Any],
                   additional_inductor_config: Optional[Dict] = None,
-                  do_logging=False,
+                  do_logging: bool = False,
                   runtime_shape: Optional[int] = None,
                   use_inductor: bool = True):
     if not use_inductor:
@@ -252,8 +253,14 @@ class VllmBackend:
         self.compilation_configs.init_during_runtime()
         self.configure_post_pass()
 
+        dump_graph(self.compilation_configs.pass_config, graph.graph,
+                   "before_split_graph")
+
         self.split_gm, self.piecewise_graphs = split_graph(
             graph, self.compilation_configs.splitting_ops)
+
+        dump_graph(self.compilation_configs.pass_config, graph.graph,
+                   "after_split_graph")
 
         from torch._dynamo.utils import lazy_format_graph_code
         logger.debug("%s", lazy_format_graph_code("before split", self.graph))
