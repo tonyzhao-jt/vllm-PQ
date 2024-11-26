@@ -1125,6 +1125,14 @@ class Scheduler:
         ignored_seq_groups = prefills.ignored_seq_groups
         ignored_seq_groups.extend(swapped_in.infeasible_seq_groups)
 
+        print('num_lookahead_slots in _schedule_default ' +
+              str(running_scheduled.num_lookahead_slots))
+        print('prefills in _schedule_default_prefill ' +
+              str(num_prefill_groups))
+        print('decodes in _schedule_default_prefill ' +
+              str(+len(running_scheduled.decode_seq_groups) +
+                  len(swapped_in.decode_seq_groups)))
+
         return SchedulerOutputs(
             scheduled_seq_groups=scheduled_seq_groups,
             num_prefill_groups=num_prefill_groups,
@@ -1201,6 +1209,15 @@ class Scheduler:
         # Update swapped requests.
         self.swapped.extend(running_scheduled.swapped_out)
         # Put prefills first due to Attention backend ordering assumption.
+        print('num_lookahead_slots in _schedule_chunked_prefill ' +
+              str(running_scheduled.num_lookahead_slots))
+        print('prefills in _schedule_chunked_prefill ' + str(
+            len(prefills.seq_groups) + len(swapped_in.prefill_seq_groups) +
+            len(running_scheduled.prefill_seq_groups)))
+        print('decodes in _schedule_chunked_prefill ' +
+              str(+len(running_scheduled.decode_seq_groups) +
+                  len(swapped_in.decode_seq_groups)))
+
         return SchedulerOutputs(
             scheduled_seq_groups=(prefills.seq_groups +
                                   running_scheduled.prefill_seq_groups +
@@ -1636,7 +1653,6 @@ class Scheduler:
                 return self.scheduler_config.num_lookahead_slots + 1
             else:
                 return 0
-
         return self.scheduler_config.num_lookahead_slots
 
     def _get_num_new_uncached_and_cached_tokens(
