@@ -16,6 +16,7 @@ from transformers import PretrainedConfig
 
 import vllm.envs as envs
 from vllm.compilation.inductor_pass import CallableInductorPass, InductorPass
+from vllm.compilation.utils import use_cc_kernels
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization import (QUANTIZATION_METHODS,
                                                      get_quantization_config)
@@ -2168,12 +2169,15 @@ class CompilationConfig(BaseModel):
         - dump_graph_stages: list of stages for which we want to dump the graph.
             Each pass defines its own stages (before, after, maybe in-between).
         - dump_graph_dir: directory to dump the graphs. Default is .
+        - enable_collective_fusion: whether to enable the custom collective
+             communication fusion pass.
         - enable_fusion: whether to enable the custom fusion pass.
         - enable_reshape: whether to enable the custom reshape elimination pass.
             TODO better pass enabling system.
         """
         dump_graph_stages: List[str] = Field(default_factory=list)
         dump_graph_dir: Path = Field(default=Path("."))
+        enable_collective_fusion: bool = True
         enable_fusion: bool = True
         enable_reshape: bool = True
 
@@ -2184,8 +2188,9 @@ class CompilationConfig(BaseModel):
             Do not include dump_graph_* in the hash - they don't affect
             compilation.
             """
-            dict_ = self.model_dump(
-                include={"enable_fusion", "enable_reshape"})
+            dict_ = self.model_dump(include={
+                "enable_collective_fusion", "enable_fusion", "enable_reshape"
+            })
             encoded = json.dumps(dict_, sort_keys=True).encode("utf-8")
             return hashlib.sha256(encoded).digest()
 
@@ -2397,6 +2402,7 @@ class VllmConfig:
             self.compilation_config.custom_ops = ["none"]
             self.compilation_config.use_cudagraph = True
             self.compilation_config.use_inductor = True
+            self.compilation_config.pass_config.enable_collective_fusion = False
             self.compilation_config.pass_config.enable_fusion = False
             self.compilation_config.pass_config.enable_reshape = False
             self.compilation_config.level = CompilationLevel.PIECEWISE
@@ -2414,6 +2420,21 @@ class VllmConfig:
             logger.warning("LoRA is not supported with `torch.compile` yet. "
                            "Disabling `torch.compile`.")
             self.compilation_config.level = CompilationLevel.NO_COMPILATION
+
+        if self.compilation_config.pass_config.enable_collective_fusion:
+            n_slices = self.parallel_config.world_size
+            max_tokens = self.scheduler_config.max_num_batched_tokens
+            if not use_cc_kernels(int(max_tokens / n_slices), n_slices):
+                logger.info(
+                    ("Disabling collective fusion pass since chunked prefill "
+                     "size %d is too small."), max_tokens)
+                self.compilation_config.pass_config.enable_collective_fusion = \
+                    False
+            if n_slices == 1:
+                logger.info("Disabling collective fusion pass since tensor "
+                            "parallelism is not enabled.")
+                self.compilation_config.pass_config.enable_collective_fusion = \
+                    False
 
         current_platform.check_and_update_config(self)
 

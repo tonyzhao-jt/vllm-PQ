@@ -15,14 +15,15 @@ from vllm.utils import weak_ref_tensors
 from .counter import compilation_counter
 from .inductor_pass import InductorPass
 from .pass_manager import PostGradPassManager
+from .utils import dump_graph
 
 logger = init_logger(__name__)
 
 
-def wrap_inductor(graph,
-                  example_inputs,
-                  additional_inductor_config,
-                  do_logging=False,
+def wrap_inductor(graph: fx.GraphModule,
+                  example_inputs: Sequence[Any],
+                  additional_inductor_config: Optional[Dict] = None,
+                  do_logging: bool = False,
                   runtime_shape: Optional[int] = None,
                   use_inductor: bool = True):
     if not use_inductor:
@@ -37,6 +38,10 @@ def wrap_inductor(graph,
             logger.info("Compiling a graph for shape %s", runtime_shape)
 
     from torch._inductor import config
+
+    # Enable support for symmetric memory ops in the inductor.
+    torch._inductor.config._micro_pipeline_tp = True
+
     current_config = config.shallow_copy_dict()
     from torch._inductor.compile_fx import compile_fx
 
@@ -248,8 +253,18 @@ class VllmBackend:
         self.compilation_configs.init_during_runtime()
         self.configure_post_pass()
 
+        if ("before_split_graph"
+                in self.compilation_configs.pass_config.dump_graph_stages):
+            dump_graph(self.compilation_configs.pass_config, graph.graph,
+                       "before_split_graph")
+
         self.split_gm, self.piecewise_graphs = split_graph(
             graph, self.compilation_configs.splitting_ops)
+
+        if ("after_split_graph"
+                in self.compilation_configs.pass_config.dump_graph_stages):
+            dump_graph(self.compilation_configs.pass_config,
+                       self.split_gm.graph, "after_split_graph")
 
         from torch._dynamo.utils import lazy_format_graph_code
         logger.debug("%s", lazy_format_graph_code("before split", self.graph))

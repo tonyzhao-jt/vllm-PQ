@@ -32,12 +32,20 @@ from unittest.mock import patch
 
 import torch
 import torch.distributed
-from torch.distributed import Backend, ProcessGroup
+from torch.distributed import Backend, ProcessGroup, _symmetric_memory
 
 import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.utils import direct_register_custom_op, supports_custom_op
+
+has_flux = False
+if envs.VLLM_USE_FLUX:
+    try:
+        import flux
+        has_flux = True
+    except ImportError:
+        has_flux = False
 
 
 @dataclass
@@ -96,11 +104,16 @@ def _register_group(group: "GroupCoordinator") -> None:
     _groups[group.unique_name] = weakref.ref(group)
 
 
-def all_reduce(tensor: torch.Tensor, group_name: str) -> torch.Tensor:
+def get_group_from_group_name(group_name: str) -> "GroupCoordinator":
     assert group_name in _groups, f"Group {group_name} is not found."
     group = _groups[group_name]()
     if group is None:
         raise ValueError(f"Group {group_name} is destroyed.")
+    return group
+
+
+def all_reduce(tensor: torch.Tensor, group_name: str) -> torch.Tensor:
+    group = get_group_from_group_name(group_name)
     return group._all_reduce_out_place(tensor)
 
 
@@ -198,6 +211,10 @@ class GroupCoordinator:
         self.use_tpu_communicator = use_tpu_communicator
         self.use_hpu_communicator = use_hpu_communicator
         self.use_xpu_communicator = use_xpu_communicator
+
+        if has_flux and torch.distributed.get_world_size(
+                self.device_group) > 1:
+            flux.init_flux_shm(self.device_group)
 
         # lazy import to avoid documentation build error
         from vllm.distributed.device_communicators.custom_all_reduce import (
@@ -973,6 +990,9 @@ def init_distributed_environment(
     else:
         assert _WORLD.world_size == torch.distributed.get_world_size(), (
             "world group already initialized with a different world size")
+
+    group_name = torch.distributed.group.WORLD.group_name
+    _symmetric_memory.enable_symm_mem_for_group(group_name)
 
 
 def initialize_model_parallel(
