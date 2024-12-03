@@ -90,6 +90,7 @@ Documentation
    serving/integrations
    serving/tensorizer
    serving/compatibility_matrix
+   serving/weights_loading_with_fastsafetensor
    serving/faq
 
 .. toctree::
