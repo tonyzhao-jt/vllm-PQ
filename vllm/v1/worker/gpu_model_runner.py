@@ -101,6 +101,7 @@ class GPUModelRunner:
                                and not self.model_config.enforce_eager)
         # TODO(woosuk): Provide an option to tune the max cudagraph batch size.
         self.cudagraph_batch_sizes = [1, 2, 4] + [i for i in range(8, 513, 8)]
+        self.cudagraph_lookup_table = self._build_cudagraph_lookup_table()
         self.positions = torch.zeros(self.max_num_tokens,
                                      dtype=torch.int64,
                                      device=self.device)
@@ -594,12 +595,19 @@ class GPUModelRunner:
                             dtype=self.kv_cache_dtype,
                             device=self.device))
 
+    def _build_cudagraph_lookup_table(self):
+        lookup_table = [None] * (self.cudagraph_batch_sizes[-1] + 1)
+        idx = 0
+        for batch_size in range(1, self.cudagraph_batch_sizes[-1] + 1):
+            if batch_size > self.cudagraph_batch_sizes[idx]:
+                idx += 1
+            lookup_table[batch_size] = self.cudagraph_batch_sizes[idx]
+        return lookup_table
+
     def _get_padded_batch_size(self, batch_size: int) -> Optional[int]:
-        # TODO: Optimize this?
-        for size in self.cudagraph_batch_sizes:
-            if batch_size <= size:
-                return size
-        return None
+        if batch_size >= len(self.cudagraph_lookup_table):
+            return None
+        return self.cudagraph_lookup_table[batch_size]
 
 
 @dataclass
