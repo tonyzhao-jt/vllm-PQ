@@ -1,4 +1,5 @@
 # pylint: disable=unused-argument
+import copy
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
@@ -73,6 +74,13 @@ class LoRAMapping(AdapterMapping):
 
 
 class BaseLayerWithLoRA(nn.Module):
+    # Initialized following static typing.
+    _create_lora_weights_args: Tuple[int, LoRAConfig,
+                                     Optional[PretrainedConfig]] = (
+                                         0,
+                                         LoRAConfig(1, 1),
+                                         None,
+                                     )
 
     def slice_lora_a(
         self, lora_a: Union[torch.Tensor, List[Union[torch.Tensor, None]]]
@@ -99,11 +107,18 @@ class BaseLayerWithLoRA(nn.Module):
         """Resets the lora weights at index back to 0."""
         ...
 
+    def update_max_lora_rank(
+        self,
+        lora_a: Union[torch.Tensor, List[Union[torch.Tensor, None]]],
+    ):
+        """Updates max lora rank if larger lora matrices are given."""
+        ...
+
     def set_lora(
         self,
         index: int,
-        lora_a: torch.Tensor,
-        lora_b: torch.Tensor,
+        lora_a: Union[torch.Tensor, List[Union[torch.Tensor, None]]],
+        lora_b: Union[torch.Tensor, List[Union[torch.Tensor, None]]],
         embeddings_tensor: Optional[torch.Tensor],
         bias: Optional[torch.Tensor] = None,
     ):
@@ -137,11 +152,14 @@ class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
         self.embeddings_weights: Optional[torch.Tensor]
 
     def create_lora_weights(
-            self,
-            max_loras: int,
-            lora_config: LoRAConfig,
-            model_config: Optional[PretrainedConfig] = None) -> None:
-
+        self,
+        max_loras: int,
+        lora_config: LoRAConfig,
+        model_config: Optional[PretrainedConfig] = None,
+    ) -> None:
+        self._create_lora_weights_args = (max_loras,
+                                          copy.deepcopy(lora_config),
+                                          copy.deepcopy(model_config))
         if self.base_layer.num_added_embeddings_per_partition > 0:
             # We can start adding lora weights
             self.embeddings_weights = self.base_layer.weight.data[
@@ -198,6 +216,14 @@ class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
         self.lora_b_stacked[index] = 0
         self.embeddings_tensors[index] = 0
 
+    def update_max_lora_rank(
+        self,
+        lora_a: torch.Tensor,
+    ):
+        if lora_a.shape[1] > self._create_lora_weights_args[1].max_lora_rank:
+            self._create_lora_weights_args[1].max_lora_rank = lora_a.shape[1]
+            self.create_lora_weights(*self._create_lora_weights_args)
+
     def set_lora(
         self,
         index: int,
@@ -207,6 +233,8 @@ class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
+
         self.lora_a_stacked[index, :lora_a.shape[0], :lora_a.shape[1]].copy_(
             lora_a, non_blocking=True)
         self.lora_b_stacked[index,
@@ -284,6 +312,9 @@ class ReplicatedLinearWithLoRA(BaseLayerWithLoRA):
         lora_config: LoRAConfig,
         model_config: Optional[PretrainedConfig] = None,
     ) -> None:
+        self._create_lora_weights_args = (max_loras,
+                                          copy.deepcopy(lora_config),
+                                          copy.deepcopy(model_config))
         self.lora_config = lora_config
         lora_a_output_size = lora_config.max_lora_rank
         self.lora_a_stacked = torch.zeros(
@@ -319,6 +350,14 @@ class ReplicatedLinearWithLoRA(BaseLayerWithLoRA):
         if self.lora_config.bias_enabled:
             self.bias_stacked[index] = 0
 
+    def update_max_lora_rank(
+        self,
+        lora_a: torch.Tensor,
+    ):
+        if lora_a.shape[1] > self._create_lora_weights_args[1].max_lora_rank:
+            self._create_lora_weights_args[1].max_lora_rank = lora_a.shape[1]
+            self.create_lora_weights(*self._create_lora_weights_args)
+
     def set_lora(
         self,
         index: int,
@@ -328,6 +367,7 @@ class ReplicatedLinearWithLoRA(BaseLayerWithLoRA):
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
 
         self.lora_a_stacked[index,
                             0, :lora_a.shape[1], :lora_a.shape[0]].copy_(
@@ -407,6 +447,9 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
         lora_config: LoRAConfig,
         model_config: Optional[PretrainedConfig] = None,
     ) -> None:
+        self._create_lora_weights_args = (max_loras,
+                                          copy.deepcopy(lora_config),
+                                          copy.deepcopy(model_config))
         self.lora_config = lora_config
         self.tp_size = get_tensor_model_parallel_world_size()
         lora_a_output_size_per_partition = (
@@ -485,6 +528,21 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
         bias = bias[start_idx:end_idx]
         return bias
 
+    def update_max_lora_rank(
+        self,
+        lora_a: torch.Tensor,
+    ) -> None:
+        if (self.lora_config.fully_sharded_loras
+                and lora_a.shape[1] * self.tp_size >
+                self.lora_config.max_lora_rank):
+            self._create_lora_weights_args[1].max_lora_rank = (
+                lora_a.shape[1] * self.tp_size)
+            self.create_lora_weights(*self._create_lora_weights_args)
+        elif (not self.lora_config.fully_sharded_loras
+              and lora_a.shape[1] > self.lora_config.max_lora_rank):
+            self._create_lora_weights_args[1].max_lora_rank = lora_a.shape[1]
+            self.create_lora_weights(*self._create_lora_weights_args)
+
     def set_lora(
         self,
         index: int,
@@ -494,6 +552,7 @@ class ColumnParallelLinearWithLoRA(BaseLayerWithLoRA):
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
 
         if self.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
@@ -575,6 +634,9 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         lora_config: LoRAConfig,
         model_config: Optional[PretrainedConfig] = None,
     ) -> None:
+        self._create_lora_weights_args = (max_loras,
+                                          copy.deepcopy(lora_config),
+                                          copy.deepcopy(model_config))
         self.lora_config = lora_config
         n_slices = 2
         if not (len(self.base_layer.output_sizes) == n_slices
@@ -662,6 +724,23 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         ]
         return bias
 
+    def update_max_lora_rank(self, lora_a: List[Union[torch.Tensor,
+                                                      None]]) -> None:
+        for tensor in lora_a:
+            if tensor is None:
+                continue
+            if (self.lora_config.fully_sharded_loras
+                    and tensor.shape[1] * self.tp_size >
+                    self.lora_config.max_lora_rank):
+                self._create_lora_weights_args[1].max_lora_rank = (
+                    tensor.shape[1] * self.tp_size)
+                self.create_lora_weights(*self._create_lora_weights_args)
+            elif (not self.lora_config.fully_sharded_loras
+                  and tensor.shape[1] > self.lora_config.max_lora_rank):
+                self._create_lora_weights_args[1].max_lora_rank = (
+                    tensor.shape[1])
+                self.create_lora_weights(*self._create_lora_weights_args)
+
     def set_lora(
         self,
         index: int,
@@ -671,6 +750,7 @@ class MergedColumnParallelLinearWithLoRA(ColumnParallelLinearWithLoRA):
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
 
         if self.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
@@ -789,6 +869,8 @@ class QKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
+
         if self.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
             lora_b = self.slice_lora_b(lora_b)
@@ -835,6 +917,9 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         lora_config: LoRAConfig,
         model_config: Optional[PretrainedConfig] = None,
     ) -> None:
+        self._create_lora_weights_args = (max_loras,
+                                          copy.deepcopy(lora_config),
+                                          copy.deepcopy(model_config))
         self.lora_config = lora_config
         self.tp_size = get_tensor_model_parallel_world_size()
         self.tp_rank = get_tensor_model_parallel_rank()
@@ -994,15 +1079,33 @@ class MergedQKVParallelLinearWithLora(ColumnParallelLinearWithLoRA):
         bias = [bias_q, bias_k, bias_v]
         return bias
 
+    def update_max_lora_rank(self, lora_a: List[Union[torch.Tensor,
+                                                      None]]) -> None:
+        for tensor in lora_a:
+            if tensor is None:
+                continue
+            if (self.lora_config.fully_sharded_loras
+                    and tensor.shape[1] * self.tp_size >
+                    self.lora_config.max_lora_rank):
+                self._create_lora_weights_args[1].max_lora_rank = (
+                    tensor.shape[1] * self.tp_size)
+                self.create_lora_weights(*self._create_lora_weights_args)
+            elif (not self.lora_config.fully_sharded_loras
+                  and tensor.shape[1] > self.lora_config.max_lora_rank):
+                self._create_lora_weights_args[1].max_lora_rank = (
+                    tensor.shape[1])
+                self.create_lora_weights(*self._create_lora_weights_args)
+
     def set_lora(
         self,
         index: int,
-        lora_a: torch.Tensor,
-        lora_b: torch.Tensor,
+        lora_a: List[Union[torch.Tensor, None]],
+        lora_b: List[Union[torch.Tensor, None]],
         embeddings_tensor: Optional[torch.Tensor],
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
 
         if self.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
@@ -1088,6 +1191,9 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
         lora_config: LoRAConfig,
         model_config: Optional[PretrainedConfig] = None,
     ) -> None:
+        self._create_lora_weights_args = (max_loras,
+                                          copy.deepcopy(lora_config),
+                                          copy.deepcopy(model_config))
         self.lora_config = lora_config
         self.tp_rank = get_tensor_model_parallel_rank()
         self.lora_a_stacked = torch.zeros(
@@ -1152,6 +1258,14 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
     def slice_bias(self, bias: torch.Tensor) -> torch.Tensor:
         return bias
 
+    def update_max_lora_rank(
+        self,
+        lora_a: torch.Tensor,
+    ):
+        if lora_a.shape[1] > self._create_lora_weights_args[1].max_lora_rank:
+            self._create_lora_weights_args[1].max_lora_rank = lora_a.shape[1]
+            self.create_lora_weights(*self._create_lora_weights_args)
+
     def set_lora(
         self,
         index: int,
@@ -1161,6 +1275,7 @@ class RowParallelLinearWithLoRA(BaseLayerWithLoRA):
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
 
         if self.base_layer.tp_size > 1:
             lora_a = self.slice_lora_a(lora_a)
@@ -1310,6 +1425,9 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         if 32000 < self.base_layer.vocab_size > 257024:
             raise ValueError("When using LoRA, vocab size must be "
                              "32000 >= vocab_size <= 257024")
+        self._create_lora_weights_args = (max_loras,
+                                          copy.deepcopy(lora_config),
+                                          copy.deepcopy(model_config))
         self.lora_a_stacked = torch.zeros(
             (
                 max_loras,
@@ -1352,6 +1470,14 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         self.lora_b_stacked[index] = 0
         self.embeddings_tensors[index] = float("-inf")
 
+    def update_max_lora_rank(
+        self,
+        lora_a: torch.Tensor,
+    ):
+        if lora_a.shape[1] > self._create_lora_weights_args[1].max_lora_rank:
+            self._create_lora_weights_args[1].max_lora_rank = lora_a.shape[1]
+            self.create_lora_weights(*self._create_lora_weights_args)
+
     def set_lora(
         self,
         index: int,
@@ -1361,6 +1487,8 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         bias: Optional[torch.Tensor] = None,
     ):
         self.reset_lora(index)
+        self.update_max_lora_rank(lora_a)
+
         self.lora_a_stacked[index,
                             0, :lora_a.shape[1], :lora_a.shape[0]].copy_(
                                 lora_a.T, non_blocking=True)
