@@ -68,21 +68,20 @@ class ParallelSampleParentRequestInfo:
     n_aborted: int = 0
     n_finished: int = 0
 
-    def num_child_requests_not_aborted(self):
-        assert self.n >= self.n_aborted
-        return self.n - self.n_aborted
+    def gen_num_active_children(self):
+        assert self.n >= self.n_finished + self.n_aborted
+        return self.n - self.n_finished - self.n_aborted
 
-    def num_child_requests_not_finished(self):
-        assert self.n >= self.n_finished
-        return self.n - self.n_finished
+    def incr_num_aborted(self):
+        self.n_aborted += 1
 
-    def get_num_not_finished_incr_if_true(
+    def get_num_active_children_incr_n_finished_if_true(
         self,
         child_req_finished: bool,
     ) -> int:
         if child_req_finished:
             self.n_finished += 1
-        return self.num_child_requests_not_finished()
+        return self.gen_num_active_children()
 
 
 class LLMEngine:
@@ -220,7 +219,7 @@ class LLMEngine:
           Number of parallel sampling child requests
         """
         return sum([
-            preq_info.num_child_requests_not_aborted()
+            preq_info.gen_num_active_children()
             for (_, preq_info) in self.parent_req_id_info.items()
         ])
 
@@ -241,15 +240,21 @@ class LLMEngine:
     def validate_outputs(cls, outputs, output_type):
         return outputs
 
-    def _forget_parallel_sample_child_request_and_maybe_parent(
+    def _forget_parallel_sample_parent_request(
+        self,
+        parent_req_id: str,
+    ) -> None:
+        self.parent_req_id_info.pop(parent_req_id, None)
+
+    def _forget_parallel_sample_child_request(
         self,
         child_request_id: str,
-    ) -> None:
+    ) -> str:
         """Forget child request parallel sampling metadata, & its' parent's
         metadata if necessary.
         
         Parent request parallel sampling metadata is forgotten once all
-        child requests have finished.
+        child requests are inactive.
 
         Args:
           child_request_id: id of finished child request
@@ -258,12 +263,7 @@ class LLMEngine:
         parent_req_id = self.child_req_id_to_parent_req_info[
             child_request_id].parent_req_id
         self.child_req_id_to_parent_req_info.pop(child_request_id, None)
-        # Track parent request's remaining child requests & erase parent
-        # request metadata if there are no remaining child requests
-        self.parent_req_id_info[parent_req_id].n_aborted += 1
-        if self.parent_req_id_info[
-                parent_req_id].num_child_requests_not_aborted() == 0:
-            self.parent_req_id_info.pop(parent_req_id, None)
+        return parent_req_id
 
     def _maybe_forget_parallel_sample_child_requests(
             self, possible_child_request_ids: List[str]) -> None:
@@ -280,8 +280,15 @@ class LLMEngine:
             # Check if request is a parallel sampling child request
             if possible_child_req_id in self.child_req_id_to_parent_req_info:
                 # If so, forget child request parallel sampling metadata
-                self._forget_parallel_sample_child_request_and_maybe_parent(
+                parent_req_id = self._forget_parallel_sample_child_request(
                     possible_child_req_id)
+
+                # Track parent request's remaining child requests & erase parent
+                # request metadata if there are no remaining child requests
+                self.parent_req_id_info[parent_req_id].incr_num_aborted()
+                if self.parent_req_id_info[
+                        parent_req_id].gen_num_active_children() < 1:
+                    self._forget_parallel_sample_parent_request(parent_req_id)
 
     def abort_request(self, request_ids: List[str]) -> None:
         """Remove request_ids from EngineCore and Detokenizer."""
@@ -396,7 +403,7 @@ class LLMEngine:
     ) -> None:
         # Parent is finished when all children are finished
         parent_req_output.finished = (
-            parent_req_info.get_num_not_finished_incr_if_true(
+            parent_req_info.get_num_active_children_incr_n_finished_if_true(
                 child_req_output.finished) < 1)
         p_met = parent_req_output.metrics
         c_met = child_req_output.metrics
@@ -446,6 +453,7 @@ class LLMEngine:
                     possible_child_req_id))
             if maybe_child_req_info:
                 # Aggregate child request into parallel sampling request output
+                child_req_finished = req_output.finished
                 parent_req_id = maybe_child_req_info.parent_req_id
                 parent_req_info = (
                     self._get_parallel_sampling_parent_request_info(
@@ -459,7 +467,8 @@ class LLMEngine:
                     last_req_output = parent_req_info.last_request_output
                     last_req_output.request_id = parent_req_id
                     last_req_output.finished = (
-                        parent_req_info.get_num_not_finished_incr_if_true(
+                        parent_req_info.
+                        get_num_active_children_incr_n_finished_if_true(
                             last_req_output.finished) < 1)
                 else:
                     last_req_output = parent_req_info.last_request_output
@@ -475,6 +484,16 @@ class LLMEngine:
                     # to the output
                     agg_request_outputs.append(last_req_output)
                     parent_req_ids_seen.add(parent_req_id)
+                if child_req_finished:
+                    self._forget_parallel_sample_child_request(
+                        possible_child_req_id)
+                    # Track parent request's remaining child requests & erase
+                    # parent request metadata if there are no remaining child
+                    # requests
+                    if self.parent_req_id_info[
+                            parent_req_id].gen_num_active_children() < 1:
+                        self._forget_parallel_sample_parent_request(
+                            parent_req_id)
             else:
                 # Not a parallel sampling request; don't touch it
                 agg_request_outputs.append(req_output)
