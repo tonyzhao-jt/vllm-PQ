@@ -1,7 +1,9 @@
-from typing import Dict, List, Mapping, Optional, Type, Union
-from dataclasses import dataclass
-from typing_extensions import TypeVar
 import copy
+from dataclasses import dataclass
+from typing import Dict, List, Mapping, Optional, Type, Union
+
+from typing_extensions import TypeVar
+
 from vllm.config import VllmConfig
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics_types import StatLoggerBase
@@ -103,10 +105,12 @@ class LLMEngine:
         self.model_config = vllm_config.model_config
 
         # Parallel sampling metadata
-        # - Metadata for aggregating the child requests associated with a parent request
+        # - Metadata for aggregating the child requests associated with a
+        #   parent request
         self.child_req_id_to_parent_req_info: Dict[
             str, ParallelSampleChildRequestInfo] = {}
-        # - Parent request metadata i.e. degree of parallelism and other characteristics
+        # - Parent request metadata i.e. degree of parallelism and other
+        #   characteristics
         self.parent_req_id_info: Dict[str,
                                       ParallelSampleParentRequestInfo] = {}
 
@@ -241,9 +245,11 @@ class LLMEngine:
         self,
         child_request_id: str,
     ) -> None:
-        """Forget child request parallel sampling metadata, & its' parent's metadata if necessary.
+        """Forget child request parallel sampling metadata, & its' parent's
+        metadata if necessary.
         
-        Parent request parallel sampling metadata is forgotten once all child requests have finished.
+        Parent request parallel sampling metadata is forgotten once all
+        child requests have finished.
 
         Args:
           child_request_id: id of finished child request
@@ -252,8 +258,8 @@ class LLMEngine:
         parent_req_id = self.child_req_id_to_parent_req_info[
             child_request_id].parent_req_id
         self.child_req_id_to_parent_req_info.pop(child_request_id, None)
-        # Track parent request's remaining child requests & erase parent request metadata
-        # if there are no remaining child requests
+        # Track parent request's remaining child requests & erase parent
+        # request metadata if there are no remaining child requests
         self.parent_req_id_info[parent_req_id].n_aborted += 1
         if self.parent_req_id_info[
                 parent_req_id].num_child_requests_not_aborted() == 0:
@@ -261,13 +267,14 @@ class LLMEngine:
 
     def _maybe_forget_parallel_sample_child_requests(
             self, possible_child_request_ids: List[str]) -> None:
-        """When a request aborts, if it is a child of a parallel sampling request,
-        forget its parallel sampling metadata. Apply this to a list of possible child
-        request ids. If the request is not associated with parallel sampling, this
-        method has no effect on it.
+        """When a request aborts, if it is a child of a parallel sampling
+        request, forget its parallel sampling metadata. Apply this to a
+        list of possible child request ids. If the request is not
+        associated with parallel sampling, this method has no effect on
+        it.
         
         Args:
-          request_ids: list of request ids to possibly forget parallel sampling metadata for
+          request_ids: list of possible child req ids
         """
         for possible_child_req_id in possible_child_request_ids:
             # Check if request is a parallel sampling child request
@@ -288,7 +295,7 @@ class LLMEngine:
         parent_req_id: str,
         parallel_sample_parent_req_info: ParallelSampleParentRequestInfo,
     ) -> None:
-        """Register the attributes associated with a parallel sampling request (i.e. the parent request)"""
+        """Register parallel sampling request (i.e. the parent request)"""
         self.parent_req_id_info[
             parent_req_id] = parallel_sample_parent_req_info
 
@@ -296,11 +303,12 @@ class LLMEngine:
         self,
         parallel_sample_child_req_info: ParallelSampleChildRequestInfo,
     ) -> str:
-        """Register the association of a parallel sampling child req with its parent req.
+        """Register association of parallel sampling child req with parent req.
         
         Generates a child request id
 
-        Side effect: internal mapping from child req id -> parent req info structure
+        Side effect: internal mapping from child req id -> parent req info
+                     structure
 
         Returns:
           Child request id
@@ -372,11 +380,13 @@ class LLMEngine:
         return self.child_req_id_to_parent_req_info.get(
             possible_child_request_id, None)
 
-    def _maybe_get_parallel_sampling_parent_request_info(
+    def _get_parallel_sampling_parent_request_info(
         self,
-        possible_parent_request_id: str,
-    ) -> Optional[ParallelSampleParentRequestInfo]:
-        return self.parent_req_id_info.get(possible_parent_request_id, None)
+        parent_request_id: str,
+    ) -> ParallelSampleParentRequestInfo:
+        assert parent_request_id in self.parent_req_id_info, (
+            "Not a parallel sampling request")
+        return self.parent_req_id_info[parent_request_id]
 
     def _merge_parallel_sampling_child_request_output_in_place(
         self,
@@ -385,17 +395,18 @@ class LLMEngine:
         parent_req_info: ParallelSampleParentRequestInfo,
     ) -> None:
         # Parent is finished when all children are finished
-        parent_req_output.finished = parent_req_info.get_num_not_finished_incr_if_true(
-            child_req_output.finished) < 1
+        parent_req_output.finished = (
+            parent_req_info.get_num_not_finished_incr_if_true(
+                child_req_output.finished) < 1)
         p_met = parent_req_output.metrics
         c_met = child_req_output.metrics
         if p_met is None:
-            # If current parent request metrics are `None`, update with this child's metrics
-            # (which may also be None)
+            # If current parent request metrics are `None`, update with this
+            # child's metrics (which may also be None)
             parent_req_output.metrics = c_met
         elif c_met is not None:
-            # Only merge in child request output metrics if the child request output metrics
-            # are not `None`
+            # Only merge in child request output metrics if the child request
+            # output metrics are not `None`
             p_met.last_token_time = max(p_met.last_token_time,
                                         c_met.last_token_time)
             p_met.first_scheduled_time = _none_safe_min(
@@ -430,31 +441,38 @@ class LLMEngine:
         #parent_req_id_to_idx: Dict[str,int]={}
         for req_output in request_outputs:
             possible_child_req_id = req_output.request_id
-            maybe_child_req_info = self._maybe_get_parallel_sampling_child_request_info(
-                possible_child_req_id)
+            maybe_child_req_info = (
+                self._maybe_get_parallel_sampling_child_request_info(
+                    possible_child_req_id))
             if maybe_child_req_info:
                 # Aggregate child request into parallel sampling request output
                 parent_req_id = maybe_child_req_info.parent_req_id
-                parent_req_info = self._maybe_get_parallel_sampling_parent_request_info(
-                    parent_req_id)
+                parent_req_info = (
+                    self._get_parallel_sampling_parent_request_info(
+                        parent_req_id))
                 if parent_req_info.last_request_output is None:
-                    # For a particular parent id, this is the first child request output we have seen in *any* step.
-                    # Repurpose the child request output structure to be the parent request output structure
+                    # For a particular parent id, this is the first child
+                    # request output we have seen in *any* step.
+                    # Repurpose the child request output structure to be the
+                    # parent request output structure
                     parent_req_info.last_request_output = req_output
                     last_req_output = parent_req_info.last_request_output
                     last_req_output.request_id = parent_req_id
-                    last_req_output.finished = parent_req_info.get_num_not_finished_incr_if_true(
-                        last_req_output.finished) < 1
+                    last_req_output.finished = (
+                        parent_req_info.get_num_not_finished_incr_if_true(
+                            last_req_output.finished) < 1)
                 else:
                     last_req_output = parent_req_info.last_request_output
-                    # Merge this child request output into the growing request output data structure associated
-                    # with its parent.
+                    # Merge this child request output into the growing request
+                    # output data structure associated with its parent.
                     self._merge_parallel_sampling_child_request_output_in_place(
                         last_req_output, req_output, parent_req_info)
                 if parent_req_id not in parent_req_ids_seen:
-                    # For a particular parent id, this is the first child request output we have seen in *this* step.
-                    # Remember that a request output data structure for this particular parent request
-                    # has already been appended to the output
+                    # For a particular parent id, this is the first child
+                    # request output we have seen in *this* step.
+                    # Remember that a request output data structure for this
+                    # particular parent request has already been appended
+                    # to the output
                     agg_request_outputs.append(last_req_output)
                     parent_req_ids_seen.add(parent_req_id)
             else:
@@ -472,10 +490,11 @@ class LLMEngine:
         request_outputs, requests_to_abort = self.detokenizer.step(
             engine_core_outputs)
 
-        # 3) If necessary, aggregate outputs for parallel sampling child requests
-        #    to be associated with parent request
-        request_outputs = self._maybe_aggregate_parallel_sampling_child_requests(
-            request_outputs)
+        # 3) If necessary, aggregate outputs for parallel sampling child
+        #    requests to be associated with parent request
+        request_outputs = (
+            self._maybe_aggregate_parallel_sampling_child_requests(
+                request_outputs))
 
         # 4) Abort requests that finished due to stopping criteria.
         if requests_to_abort:
