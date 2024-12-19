@@ -24,12 +24,12 @@ from vllm.model_executor.utils import set_weight_attrs
 logger = init_logger(__name__)
 
 WEIGHT_LOADER_V2_SUPPORTED = [
-    "CompressedTensorsLinearMethod", "AWQMarlinLinearMethod", "GPTQBitBLASLinearMethod",
-    "AWQLinearMethod", "GPTQMarlinLinearMethod", "Fp8LinearMethod",
-    "MarlinLinearMethod", "QQQLinearMethod", "GPTQMarlin24LinearMethod",
-    "TPUInt8LinearMethod", "GPTQLinearMethod", "FBGEMMFp8LinearMethod",
-    "ModelOptFp8LinearMethod", "IPEXAWQLinearMethod", "IPEXGPTQLinearMethod",
-    "HQQMarlinMethod"
+    "CompressedTensorsLinearMethod", "AWQMarlinLinearMethod",
+    "GPTQBitBLASLinearMethod", "AWQLinearMethod", "GPTQMarlinLinearMethod",
+    "Fp8LinearMethod", "MarlinLinearMethod", "QQQLinearMethod",
+    "GPTQMarlin24LinearMethod", "TPUInt8LinearMethod", "GPTQLinearMethod",
+    "FBGEMMFp8LinearMethod", "ModelOptFp8LinearMethod", "IPEXAWQLinearMethod",
+    "IPEXGPTQLinearMethod", "HQQMarlinMethod"
 ]
 
 
@@ -514,7 +514,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
                     # Special case for Marlin.
                     shard_size, shard_offset = adjust_marlin_shard(
                         param, shard_size, shard_offset)
-                
+
                 shard_size, shard_offset = adjust_bitblas_shard(
                     param, shard_size, shard_offset)
 
