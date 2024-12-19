@@ -7,9 +7,9 @@ from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.layers.quantization.utils import replace_parameter
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
-    MINIMUM_BITBLAS_VERSION,
-    BITBLAS_OPTIMIZE_FEATURES, BITBLAS_SUPPORTED_GROUP_SIZES,
-    bitblas_make_empty_g_idx, bitblas_sort_g_idx, check_bitblas_supports_shape,
+    MINIMUM_BITBLAS_VERSION, BITBLAS_OPTIMIZE_FEATURES,
+    BITBLAS_SUPPORTED_GROUP_SIZES, bitblas_make_empty_g_idx,
+    bitblas_sort_g_idx, check_bitblas_supports_shape,
     query_bitblas_supported_quant_types, unpack_gptq_qweight,
     unpack_gptq_qzeros)
 
