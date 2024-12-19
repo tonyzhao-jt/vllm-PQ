@@ -19,7 +19,7 @@ You can find pre-quantized models on https://huggingface.co/models?other=bitblas
 And usually, these repositories have a quantize_config.json file that includes a quantization_config section.
 
 Read bitblas format checkpoint.
---------------------------
+---------------------------------
 
 .. code-block:: python
 
@@ -30,7 +30,8 @@ Read bitblas format checkpoint.
     llm = LLM(model=model_id, dtype=torch.bfloat16, trust_remote_code=True, quantization="bitblas")
 
 Read gptq format checkpoint.
---------------------------
+-------------------------------
+
 .. code-block:: python
 
     from vllm import LLM
