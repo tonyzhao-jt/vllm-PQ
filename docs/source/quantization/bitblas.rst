@@ -30,7 +30,8 @@ Read bitblas format checkpoint.
     llm = LLM(model=model_id, dtype=torch.bfloat16, trust_remote_code=True, quantization="bitblas")
 
 Read gptq format checkpoint.
---------------------------
+-------------------------------
+
 .. code-block:: python
 
     from vllm import LLM
