@@ -15,6 +15,9 @@ BITBLAS_SUPPORTED_GROUP_SIZES = [-1, 32, 64, 128]
 
 # For dynamic shape code generation
 BITBLAS_OPTIMIZE_FEATURES = [1, 16, 32, 64, 128, 256, 512, 1024]
+# If want to enable high performance for contiguous batching
+# Please use the following values
+BITBLAS_OPTIMIZE_FEATURES_CONTIGUOUS = [16, 32, 64, 128, 256, 512, 1024]
 
 BITBLAS_SUPPORTED_NUM_BITS = [1, 2, 4, 8]
 BITBLAS_SUPPORTED_SYM = [False, True]

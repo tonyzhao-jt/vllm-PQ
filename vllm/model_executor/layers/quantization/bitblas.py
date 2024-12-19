@@ -167,6 +167,10 @@ class BitBLASLinearMethod(LinearMethodBase):
     Args:
         quant_config: The BitBLAS quantization config.
     """
+    # USE BITBLAS_OPTIMIZE_FEATURES_CONTIGUOUS
+    # Instead of BITBLAS_OPTIMIZE_FEATURES
+    # If you want to high contiguous batching
+    # performance
     OPT_FEATURES = BITBLAS_OPTIMIZE_FEATURES
     ENABLE_TUNING = True
     BITBLAS_DTYPES = {
@@ -405,7 +409,7 @@ class BitBLASLinearMethod(LinearMethodBase):
 
         bitblas_matmul = global_operator_cache.get(config)
         if bitblas_matmul is None:
-            bitblas_matmul = Matmul(config, target=BITBLAS_TARGET)
+            bitblas_matmul = Matmul(config, target=BITBLAS_TARGET, enable_tuning=False)
             if enable_tuning:
                 TUNING_MESSAGE = (f"BitBLAS Operator {config} is tuning ...")
                 logger.info(TUNING_MESSAGE)
