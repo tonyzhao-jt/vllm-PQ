@@ -1,5 +1,6 @@
 # default base image
-ARG BASE_IMAGE="public.ecr.aws/neuron/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.0-ubuntu20.04"
+# https://gallery.ecr.aws/neuron/pytorch-inference-neuronx
+ARG BASE_IMAGE="public.ecr.aws/neuron/pytorch-inference-neuronx:2.1.2-neuronx-py310-sdk2.20.2-ubuntu20.04"
 
 FROM $BASE_IMAGE
 
@@ -31,11 +32,14 @@ RUN --mount=type=bind,source=.git,target=.git \
     if [ "$GIT_REPO_CHECK" != 0 ]; then bash tools/check_repo.sh ; fi
 
 RUN python3 -m pip install -U \
-        'cmake>=3.26,<=3.30' ninja packaging 'setuptools-scm>=8' wheel jinja2 \
+        'cmake>=3.26' ninja packaging 'setuptools-scm>=8' wheel jinja2 \
         -r requirements-neuron.txt
 
 ENV VLLM_TARGET_DEVICE neuron
 RUN --mount=type=bind,source=.git,target=.git \
     pip install --no-build-isolation -v -e .
+
+# install development dependencies (for testing)
+RUN python3 -m pip install -e tests/vllm_test_utils
 
 CMD ["/bin/bash"]

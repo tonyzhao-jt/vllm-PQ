@@ -20,6 +20,10 @@ Hangs loading a model from disk
 If the model is large, it can take a long time to load it from disk. Pay attention to where you store the model. Some clusters have shared filesystems across nodes, e.g. a distributed filesystem or a network filesystem, which can be slow. 
 It'd be better to store the model in a local disk. Additionally, have a look at the CPU memory usage, when the model is too large it might take a lot of CPU memory, slowing down the operating system because it needs to frequently swap between disk and memory.
 
+.. note::
+
+    To isolate the model downloading and loading issue, you can use the ``--load-format dummy`` argument to skip loading the model weights. This way, you can check if the model downloading and loading is the bottleneck.
+
 Model is too large
 ----------------------------------------
 If the model is too large to fit in a single GPU, you might want to `consider tensor parallelism <https://docs.vllm.ai/en/latest/serving/distributed_serving.html#distributed-inference-and-serving>`_ to split the model across multiple GPUs. In that case, every process will read the whole model and split it into chunks, which makes the disk reading time even longer (proportional to the size of tensor parallelism). You can convert the model checkpoint to a sharded checkpoint using `this example <https://docs.vllm.ai/en/latest/getting_started/examples/save_sharded_state.html>`_ . The conversion process might take some time, but later you can load the sharded checkpoint much faster. The model loading time should remain constant regardless of the size of tensor parallelism.
@@ -82,7 +86,6 @@ If GPU/CPU communication cannot be established, you can use the following Python
     from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
 
     pynccl = PyNcclCommunicator(group=gloo_group, device=local_rank)
-    pynccl.disabled = False
 
     s = torch.cuda.Stream()
     with torch.cuda.stream(s):
@@ -122,6 +125,8 @@ If you are testing with multi-nodes, adjust ``--nproc-per-node`` and ``--nnodes`
 
 If the script runs successfully, you should see the message ``sanity check is successful!``.
 
+If the test script hangs or crashes, usually it means the hardware/drivers are broken in some sense. You should try to contact your system administrator or hardware vendor for further assistance. As a common workaround, you can try to tune some NCCL environment variables, such as ``export NCCL_P2P_DISABLE=1`` to see if it helps. Please check `their documentation <https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html>`__ for more information. Please only use these environment variables as a temporary workaround, as they might affect the performance of the system. The best solution is still to fix the hardware/drivers so that the test script can run successfully.
+
 .. note::
 
     A multi-node environment is more complicated than a single-node one. If you see errors such as ``torch.distributed.DistNetworkError``, it is likely that the network/DNS setup is incorrect. In that case, you can manually assign node rank and specify the IP via command line arguments:
@@ -130,6 +135,62 @@ If the script runs successfully, you should see the message ``sanity check is su
     - In the second node, run ``NCCL_DEBUG=TRACE torchrun --nnodes 2 --nproc-per-node=2 --node-rank 1 --master_addr $MASTER_ADDR test.py``.
 
     Adjust ``--nproc-per-node``, ``--nnodes``, and ``--node-rank`` according to your setup, being sure to execute different commands (with different ``--node-rank``) on different nodes.
+
+Python multiprocessing
+----------------------
+
+`RuntimeError` Exception
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+If you have seen a warning in your logs like this:
+
+.. code-block:: console
+
+    WARNING 12-11 14:50:37 multiproc_worker_utils.py:281] CUDA was previously
+        initialized. We must use the `spawn` multiprocessing start method. Setting
+        VLLM_WORKER_MULTIPROC_METHOD to 'spawn'. See
+        https://docs.vllm.ai/en/latest/getting_started/debugging.html#python-multiprocessing
+        for more information.
+
+or an error from Python that looks like this:
+
+.. code-block:: console
+
+    RuntimeError:
+            An attempt has been made to start a new process before the
+            current process has finished its bootstrapping phase.
+
+            This probably means that you are not using fork to start your
+            child processes and you have forgotten to use the proper idiom
+            in the main module:
+
+                if __name__ == '__main__':
+                    freeze_support()
+                    ...
+
+            The "freeze_support()" line can be omitted if the program
+            is not going to be frozen to produce an executable.
+
+            To fix this issue, refer to the "Safe importing of main module"
+            section in https://docs.python.org/3/library/multiprocessing.html
+
+then you must update your Python code to guard usage of ``vllm`` behind a ``if
+__name__ == '__main__':`` block. For example, instead of this:
+
+.. code-block:: python
+
+    import vllm
+
+    llm = vllm.LLM(...)
+
+try this instead:
+
+.. code-block:: python
+
+    if __name__ == '__main__':
+        import vllm
+
+        llm = vllm.LLM(...)
 
 Known Issues
 ----------------------------------------
