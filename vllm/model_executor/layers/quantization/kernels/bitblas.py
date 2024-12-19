@@ -7,11 +7,10 @@ from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.layers.quantization.utils import replace_parameter
 from vllm.model_executor.layers.quantization.utils.bitblas_utils import (
-    MINIMUM_BITBLAS_VERSION, BITBLAS_OPTIMIZE_FEATURES,
-    BITBLAS_SUPPORTED_GROUP_SIZES, bitblas_make_empty_g_idx,
-    bitblas_sort_g_idx, check_bitblas_supports_shape,
-    query_bitblas_supported_quant_types, unpack_gptq_qweight,
-    unpack_gptq_qzeros)
+    BITBLAS_OPTIMIZE_FEATURES, BITBLAS_SUPPORTED_GROUP_SIZES,
+    MINIMUM_BITBLAS_VERSION, bitblas_make_empty_g_idx, bitblas_sort_g_idx,
+    check_bitblas_supports_shape, query_bitblas_supported_quant_types,
+    unpack_gptq_qweight, unpack_gptq_qzeros)
 
 from .MPLinearKernel import MPLinearKernel, MPLinearLayerConfig
 
@@ -109,14 +108,16 @@ class BitBLASLinearKernel(MPLinearKernel):
         try:
             import bitblas
             if bitblas.__version__ < MINIMUM_BITBLAS_VERSION:
-                raise ImportError("bitblas version is wrong. Please "
-                                  f"install bitblas>={MINIMUM_BITBLAS_VERSION}")
+                raise ImportError(
+                    "bitblas version is wrong. Please "
+                    f"install bitblas>={MINIMUM_BITBLAS_VERSION}")
         except ImportError:
             is_bitblas_installed = False
 
         if not is_bitblas_installed:
             return False, "bitblas is not installed. Please install bitblas "\
-                          f"by running `pip install bitblas>={MINIMUM_BITBLAS_VERSION}`"
+                          "by running `pip install bitblas>="\
+                           f"{MINIMUM_BITBLAS_VERSION}`"
 
         quant_types = query_bitblas_supported_quant_types(c.zero_points)
         if c.weight_type not in quant_types:
