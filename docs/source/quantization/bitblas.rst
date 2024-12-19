@@ -10,7 +10,7 @@ Below are the steps to utilize BitBLAS with vLLM.
 
 .. code-block:: console
 
-    $ pip install bitblas>=0.0.1.dev15
+    $ pip install bitblas>=0.1.0
 
 vLLM reads the model's config file and supports pre-quantized checkpoint.
 
