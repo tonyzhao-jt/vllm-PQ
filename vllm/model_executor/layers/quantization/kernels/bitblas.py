@@ -109,14 +109,14 @@ class BitBLASLinearKernel(MPLinearKernel):
         try:
             import bitblas
             if bitblas.__version__ < MINIMUM_BITBLAS_VERSION:
-                raise ImportError(f"bitblas version is wrong. Please "
-                                  "install bitblas>={MINIMUM_BITBLAS_VERSION}")
+                raise ImportError("bitblas version is wrong. Please "
+                                  f"install bitblas>={MINIMUM_BITBLAS_VERSION}")
         except ImportError:
             is_bitblas_installed = False
 
         if not is_bitblas_installed:
-            return False, f"bitblas is not installed. Please install bitblas "\
-                          "by running `pip install bitblas>={MINIMUM_BITBLAS_VERSION}`"
+            return False, "bitblas is not installed. Please install bitblas "\
+                          f"by running `pip install bitblas>={MINIMUM_BITBLAS_VERSION}`"
 
         quant_types = query_bitblas_supported_quant_types(c.zero_points)
         if c.weight_type not in quant_types:
