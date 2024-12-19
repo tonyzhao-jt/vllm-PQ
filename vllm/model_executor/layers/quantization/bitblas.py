@@ -409,7 +409,9 @@ class BitBLASLinearMethod(LinearMethodBase):
 
         bitblas_matmul = global_operator_cache.get(config)
         if bitblas_matmul is None:
-            bitblas_matmul = Matmul(config, target=BITBLAS_TARGET, enable_tuning=False)
+            bitblas_matmul = Matmul(config,
+                                    target=BITBLAS_TARGET,
+                                    enable_tuning=False)
             if enable_tuning:
                 TUNING_MESSAGE = (f"BitBLAS Operator {config} is tuning ...")
                 logger.info(TUNING_MESSAGE)
