@@ -1,4 +1,4 @@
-.. _bitblas:
+.. _bit_blas:
 
 BitBLAS
 ==================
