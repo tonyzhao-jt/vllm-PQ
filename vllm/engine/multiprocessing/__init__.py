@@ -96,8 +96,7 @@ class RPCProcessRequest:
 
 @dataclass
 class RPCError:
-    request_id: Optional[str]
-    is_engine_errored: bool
+    request_id: str
     exception: BaseException
 
 
@@ -106,22 +105,12 @@ class RPCAbortRequest:
     request_id: str
 
 
-class RPCStartupRequest(Enum):
-    IS_SERVER_READY = 1
-
-
-@dataclass
-class RPCStartupResponse:
-    tracing_enabled: bool
-
-
 class RPCUProfileRequest(Enum):
     START_PROFILE = 1
     STOP_PROFILE = 2
 
 
-RPC_REQUEST_T = Union[RPCProcessRequest, RPCAbortRequest, RPCStartupRequest,
-                      RPCUProfileRequest]
+RPC_REQUEST_T = Union[RPCProcessRequest, RPCAbortRequest, RPCUProfileRequest]
 
 REQUEST_OUTPUTS_T = Union[List[RequestOutput], RPCError]
 
