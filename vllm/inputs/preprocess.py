@@ -332,7 +332,7 @@ class InputPreprocessor:
 
             return token_inputs(
                 prompt_token_ids=prompt_token_ids,
-                prompt_embeds=tokens_content.get('prompt_embeds'),
+                prompt_embeds=tokens_content.get("prompt_embeds"),
                 token_type_ids=token_type_ids,
                 multi_modal_data=multi_modal_data,
                 mm_processor_kwargs=mm_processor_kwargs,
@@ -362,7 +362,7 @@ class InputPreprocessor:
             return token_inputs(
                 prompt=prompt_text,
                 prompt_token_ids=prompt_token_ids,
-                prompt_embeds=text_content.get('prompt_embeds'),
+                prompt_embeds=text_content.get("prompt_embeds"),
                 multi_modal_data=multi_modal_data,
                 mm_processor_kwargs=mm_processor_kwargs,
             )
@@ -408,7 +408,7 @@ class InputPreprocessor:
 
             return token_inputs(
                 prompt_token_ids=prompt_token_ids,
-                prompt_embeds=tokens_content.get('prompt_embeds'),
+                prompt_embeds=tokens_content.get("prompt_embeds"),
                 multi_modal_data=multi_modal_data,
                 mm_processor_kwargs=mm_processor_kwargs,
             )
@@ -437,7 +437,7 @@ class InputPreprocessor:
             return token_inputs(
                 prompt=prompt_text,
                 prompt_token_ids=prompt_token_ids,
-                prompt_embeds=text_content.get('prompt_embeds'),
+                prompt_embeds=tokens_content.get("prompt_embeds"),
                 multi_modal_data=multi_modal_data,
                 mm_processor_kwargs=mm_processor_kwargs,
             )

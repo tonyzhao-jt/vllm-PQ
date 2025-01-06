@@ -447,7 +447,7 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
             else:
                 self.lm_head = ParallelLMHead(config.vocab_size,
                                               config.hidden_size,
-                                              True,
+                                              getattr(config, "use_bias", False),
                                               quant_config=quant_config,
                                               prefix=maybe_prefix(
                                                   prefix, "lm_head"))
@@ -474,7 +474,7 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
     ) -> Union[torch.Tensor, IntermediateTensors]:
         hidden_states = self.model(input_ids, positions, kv_caches,
                                    attn_metadata, intermediate_tensors,
-                                   inputs_embeds, self.lm_head.bias)
+                                   inputs_embeds)
         return hidden_states
 
     def compute_logits(
@@ -482,8 +482,11 @@ class Qwen2ForCausalLM(nn.Module, SupportsLoRA, SupportsPP):
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> Optional[torch.Tensor]:
+        # tie_word_embeddings=True, lm_head is VocabParallelEmbedding, bias is None
+        # tie_word_embeddings=False, lm_head is ParallelLMHead, bias is not None
+        bias = getattr(self.lm_head, "bias", None)
         logits = self.logits_processor(self.lm_head, hidden_states,
-                                       sampling_metadata)
+                                       sampling_metadata, bias)
         return logits
 
     def sample(
