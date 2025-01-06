@@ -1,5 +1,4 @@
 import asyncio
-import os
 from typing import AsyncGenerator, Dict, List, Mapping, Optional, Type, Union
 
 from vllm.config import ModelConfig, VllmConfig
@@ -17,9 +16,9 @@ from vllm.sampling_params import SamplingParams
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.transformers_utils.tokenizer_group import init_tokenizer_from_configs
 from vllm.usage.usage_lib import UsageContext
-from vllm.utils import kill_process_tree
-from vllm.v1.engine.core_client import EngineCoreClient
+from vllm.v1.engine.core_client import AsyncMPClient
 from vllm.v1.engine.detokenizer import Detokenizer
+from vllm.v1.engine.exceptions import EngineDeadError, EngineGenerateError
 from vllm.v1.engine.processor import Processor
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.executor.ray_utils import initialize_ray_cluster
@@ -42,8 +41,7 @@ class AsyncLLM(EngineClient):
         start_engine_loop: bool = True,
     ) -> None:
 
-        assert start_engine_loop
-
+        self.engine_core_errored = False
         self.log_requests = log_requests
         self.log_stats = log_stats
         self.stat_loggers = stat_loggers
@@ -78,15 +76,14 @@ class AsyncLLM(EngineClient):
         )
 
         # EngineCore (starts the engine in background process).
-        self.engine_core = EngineCoreClient.make_client(
-            multiprocess_mode=True,
-            asyncio_mode=True,
+        self.engine_core = AsyncMPClient(
             vllm_config=vllm_config,
             executor_class=executor_class,
             log_stats=self.log_stats,
         )
 
-        self.output_handler: Optional[asyncio.Task] = None
+        # Output handler background task.
+        self.output_handler = asyncio.create_task(self._run_output_handler())
 
     @classmethod
     def from_engine_args(
@@ -120,12 +117,11 @@ class AsyncLLM(EngineClient):
 
     def shutdown(self):
         """Shutdown, cleaning up the background proc and IPC."""
+        if handler := getattr(self, "output_handler", None):
+            handler.cancel()
 
         if engine_core := getattr(self, "engine_core", None):
             engine_core.shutdown()
-
-        if handler := getattr(self, "output_handler", None):
-            handler.cancel()
 
     @classmethod
     def _get_executor_cls(cls, vllm_config: VllmConfig) -> Type[Executor]:
@@ -157,6 +153,9 @@ class AsyncLLM(EngineClient):
         priority: int = 0,
     ) -> asyncio.Queue[RequestOutput]:
         """Add new request to the AsyncLLM."""
+
+        if self.engine_core_errored:
+            raise EngineDeadError()
 
         # 1) Create a new output queue for the request.
         if request_id in self.rid_to_queue:
@@ -212,13 +211,6 @@ class AsyncLLM(EngineClient):
         """
 
         try:
-            # We start the output_handler on the first call to generate() so
-            # we can call __init__ before the event loop, which enables us
-            # to handle startup failure gracefully in the OpenAI server.
-            if self.output_handler is None:
-                self.output_handler = asyncio.create_task(
-                    self._run_output_handler())
-
             q = await self.add_request(
                 request_id,
                 prompt,
@@ -235,6 +227,8 @@ class AsyncLLM(EngineClient):
                 # Note: drain queue without await if possible (avoids
                 # task switching under load which helps performance).
                 out = q.get_nowait() if q.qsize() > 0 else await q.get()
+                if isinstance(out, EngineDeadError):
+                    raise out
 
                 # Note: both Detokenizer and EngineCore handle their
                 # own request cleanup based on finished.
@@ -245,12 +239,28 @@ class AsyncLLM(EngineClient):
 
                 yield out
 
-        # If the request is disconnected by the client, the
-        # generate() task will be canceled. So, we abort the
-        # request if we end up here.
+        # If the request is disconnected by the client, generate()
+        # is cancelled. So, we abort the request if we end up here.
         except asyncio.CancelledError:
             await self.abort(request_id)
+            if self.log_requests:
+                logger.info("Request %s aborted.", request_id)
             raise
+
+        # EngineCore or output_handler pushed error.
+        except EngineDeadError:
+            # NOTE: we do not abort, since the EngineCore is dead
+            # and we will shut down anyways (unrecoverable).
+            if self.log_requests:
+                logger.info("Request %s failed.", request_id)
+            raise
+
+        # Error in the generate() task (possibly recoverable).
+        except Exception as e:
+            await self.abort(request_id)
+            if self.log_requests:
+                logger.info("Request %s failed.", request_id)
+            raise EngineGenerateError() from e
 
     def _process_request_outputs(self, request_outputs: List[RequestOutput]):
         """Process outputs by putting them into per-request queues."""
@@ -281,9 +291,23 @@ class AsyncLLM(EngineClient):
                 # 4) Abort any requests that finished due to stop strings.
                 await self.engine_core.abort_requests_async(reqs_to_abort)
 
+        except asyncio.CancelledError:
+            logger.debug("Output handler interrupted.")
+            raise
+
         except Exception as e:
-            logger.exception("EngineCore output handler hit an error: %s", e)
-            kill_process_tree(os.getpid())
+            logger.error("AsyncLLM output_handler got an Exception:",
+                         exc_info=e)
+            self._set_errored_and_propagate()
+
+    def _set_errored_and_propagate(self):
+        """Propagate to all generate() tasks."""
+        self.engine_core_errored = True
+
+        # Put EngineDeadError() into each generate() task's queue,
+        # each of which will raise it in their own context.
+        for _, q in self.rid_to_queue.items():
+            q.put_nowait(EngineDeadError())
 
     async def abort(self, request_id: str) -> None:
         """Abort RequestId in self, detokenizer, and engine core."""
@@ -345,16 +369,16 @@ class AsyncLLM(EngineClient):
 
     @property
     def is_running(self) -> bool:
-        return True
+        return not self.errored
 
     @property
     def is_stopped(self) -> bool:
-        return False
+        return self.errored
 
     @property
     def errored(self) -> bool:
-        return False
+        return self.engine_core_errored
 
     @property
     def dead_error(self) -> BaseException:
-        return Exception()  # TODO: implement
+        return EngineDeadError()

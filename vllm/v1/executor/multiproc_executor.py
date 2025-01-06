@@ -17,6 +17,7 @@ from vllm.distributed import (destroy_distributed_environment,
                               destroy_model_parallel)
 from vllm.distributed.device_communicators.shm_broadcast import (Handle,
                                                                  MessageQueue)
+from vllm.envs import VLLM_ENABLE_V1_MULTIPROCESSING
 from vllm.executor.multiproc_worker_utils import (
     _add_prefix, set_multiprocessing_worker_envs)
 from vllm.logger import init_logger
@@ -45,10 +46,13 @@ class MultiprocExecutor(Executor):
             logger.fatal(
                 "MulitprocExecutor got fatal signal from worker processes, "
                 "shutting down. See stack trace above for root cause issue.")
-            # Propagate error up to parent process.
-            parent_process = psutil.Process().parent()
-            parent_process.send_signal(signal.SIGUSR1)
+            # Shutdown first (avoid SysExit exceptions in __del__).
             self.shutdown()
+            if VLLM_ENABLE_V1_MULTIPROCESSING:
+                # TODO(rob): move this to the VLLMConfig.
+                # Propagate up if using the mp engine. Note that
+                # sending in non-mp mode crashes caller process.
+                psutil.Process().parent().send_signal(signal.SIGUSR1)
 
         signal.signal(signal.SIGUSR1, sigusr1_handler)
 
@@ -210,7 +214,7 @@ class MultiprocExecutor(Executor):
 
     def shutdown(self):
         """Properly shut down the executor and its workers"""
-        if getattr(self, 'shutting_down', False):
+        if not getattr(self, 'shutting_down', False):
             self.shutting_down = True
             for w in self.workers:
                 w.worker_response_mq = None
@@ -350,12 +354,20 @@ class WorkerProc:
         except SystemExit:
             logger.debug("Worker interrupted.")
 
-        except Exception:
+        except Exception as e:
+            # Log rather than raise so the stack trace is in order of
+            # WorkerProc -> EngineCore -> AsyncLLM.
+            logger.exception("WorkerProc got an Exception:", exc_info=e)
+
+            # The parent will send a SIGTERM to all worker processes
+            # after we send SIGUSR. Set this value so we don't re-throw
+            # SystemExit(), to avoid zmq exceptions during __del__.
+            shutdown_requested = True
+
             # worker_busy_loop sends exceptions exceptons to Executor
             # for shutdown, but if there is an error in startup or an
             # error with IPC itself, we need to alert the parent.
             psutil.Process().parent().send_signal(signal.SIGUSR1)
-            raise
 
         finally:
             # Clean up once worker exits busy loop
@@ -373,7 +385,7 @@ class WorkerProc:
 
             # Wait for Worker to send READY.
             while socket.poll(timeout=POLLING_TIMEOUT_MS) == 0:
-                logger.debug("Waiting for WorkerProc to startup.")
+                logger.info("Waiting for WorkerProc to startup.")
 
                 if not proc.is_alive():
                     raise RuntimeError("WorkerProc failed to start.")
