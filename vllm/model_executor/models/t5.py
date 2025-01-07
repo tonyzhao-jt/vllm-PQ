@@ -39,6 +39,10 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.sequence import IntermediateTensors
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from .utils import maybe_prefix
+# TODO best way to handle xformers imports?
+from xformers.ops.fmha.attn_bias import LowerTriangularMaskWithTensorBias
+# TODO func should be in backend interface
+from vllm.attention.backends.xformers import _get_attn_bias, _set_attn_bias
 
 
 class T5LayerNorm(nn.Module):
@@ -276,8 +280,6 @@ class T5Attention(nn.Module):
         # NOTE (NickLucche) Attn bias is computed once per encoder or decoder
         # forward, on the first call to T5Attention.forward. Subsequent 
         # *self-attention* layers will re-use it.
-        # TODO func should be in backend interface
-        from vllm.attention.backends.xformers import _get_attn_bias, _set_attn_bias
         attn_bias = _get_attn_bias(attn_metadata, self.attn_type)
         if self.attn_type == AttentionType.ENCODER_DECODER:
             # Projection of encoder's hidden states, cross-attention.
@@ -288,85 +290,70 @@ class T5Attention(nn.Module):
                 v = None
             else:
                 assert attn_metadata.num_prefills > 0
-                # Prefill phase (first decode forward), caching kv
+                # Prefill phase (first decoder forward), caching kv
                 qkv_enc, _ = self.qkv_proj(encoder_hidden_states)
                 _, k, v = qkv_enc.split(self.inner_dim, dim=-1)
             # No custom attention bias must be set when running cross attn. 
             assert attn_bias is None
-        # Skip when profiling.
+
         # FIXME should be enabled on profiling run to assess memory of bias.
-        # TODO NOT compatible with CP here, assumes homogeneous batch
+        # TODO NOT compatible with CP here (as all encoder-decoder models), 
+        # as it assumes homogeneous batch (prefills or decodes).
         elif self.has_relative_attention_bias and not is_profile_run:
             assert attn_bias is None # to be recomputed
-            # Self-attention. T5 relative positional encoding. 
-            # Compute bias based on longest sequence in batch. Biases for
-            # shorter sequences are subsets of the longest.
-            if self.attn_type == AttentionType.ENCODER:
-                seq_len = attn_metadata.max_encoder_seq_len
-            else:
-                # Decoder can receive both prefill and decoding requests  
-                seq_len = attn_metadata.max_prefill_seq_len if attn_metadata.prefill_metadata else attn_metadata.max_decode_seq_len
-            block_aligned_seq_len = (seq_len + block_size - 1) // block_size * block_size
-
-            # TODO xformers-specific, attention bias are to be provided as a list.
+            # Self-attention. Compute T5 relative positional encoding. 
+            # The bias term is computed on longest sequence in batch. Biases 
+            # for shorter sequences are slices of the longest.
+            # TODO xformers-specific code.
             align_to = 8
-            print("IN", hidden_states.shape)
-            # TODO chunked prefill
             # what I want: (num_seqs, NH, L, L_pad) for prefill, (num_seqs, NH, 1, L_pad) for decodes
             if self.attn_type == AttentionType.ENCODER:
-                # NOTE seq padding needed for xformers!
-                # HINT: To use an `attn_bias` with a sequence length that is not a multiple of 8, you need to ensure memory is aligned by slicing a bigger tensor. Example: use `attn_bias = torch.zeros([1, 1, 5, 8])[:,:,:,:5]` instead of `torch.zeros([1, 1, 5, 5])`
+                # Encoder prefill stage, uses xFormers, hence sequence 
+                # padding/alignment to 8 is required.
+                seq_len = attn_metadata.max_encoder_seq_len
                 padded_seq_len = (seq_len + align_to - 1) // align_to * align_to
-                # FIXME blockdiagonal mask with tensor bias??
-                pb = self.compute_bias(seq_len, padded_seq_len).repeat(num_seqs, 1, 1, 1)
+                # TODO (NickLucche) avoid extra copy on repeat, provide multiple slices of same memory
+                position_bias = self.compute_bias(seq_len, padded_seq_len).repeat(num_seqs, 1, 1, 1)
                 print(f"[{self.prefix}][ENCODING, xformers aligned] Seq len compute bias/shape", seq_len, padded_seq_len)
-                # print("SEQ LEN", attn_metadata.encoder_seq_lens, pb.shape) xformers needs a list, one matrix per sequence
-                attn_metadata.encoder_attn_bias = [p[:, :sq, :sq].unsqueeze(0) for p, sq in zip(pb, attn_metadata.encoder_seq_lens)]
-                print("Bias shape", attn_metadata.encoder_attn_bias[0].shape)
-            elif attn_metadata.decode_metadata is None: # TODO join with statement above
-                # NOTE first decoder step, prefill: seq len here is usually 1, but one can prepend different start tokens prior to generation. XFormers is used.    
+                # xFormers expects a list of biases, one matrix per sequence.
+                # As each sequence gets its own bias, no masking is required.
+                attn_bias = [p[None, :, :sq, :sq] for p, sq in zip(position_bias, attn_metadata.encoder_seq_lens)]
+            elif attn_metadata.prefill_metadata:
+                # Decoder prefill stage, uses xFormers, hence sequence
+                # padding/alignment to 8 is required. First decoder step, 
+                # seq_len is usually 1, but one can prepend different start 
+                # tokens prior to generation.    
+                seq_len = attn_metadata.max_prefill_seq_len
                 print(f"[{self.prefix}][DECODER but xformers prefill]", attn_metadata.max_decode_seq_len, attn_metadata.max_prefill_seq_len)
+                # ->align
                 padded_seq_len = (seq_len + align_to - 1) // align_to * align_to
-                # position_bias = self.compute_bias(seq_len, seq_len).repeat(num_seqs, 1, 1, 1)
-                # this is always 1 (seqlen) but needs filling!!
-                # position_bias = self.compute_bias(seq_len, align_to).repeat(num_seqs, 1, 1, 1)
                 position_bias = self.compute_bias(seq_len, padded_seq_len).repeat(num_seqs, 1, 1, 1)
                 print(f"[{self.prefix}][DECODER but xformers prefill] Seq len compute bias/shape", seq_len, position_bias.shape)
-                # ->align
-                # position_bias = position_bias.repeat(1, 1, align_to, align_to)
-                # print("DECODER RUN BUT NO METADATA", position_bias.shape)
-                # TODO debug, can it be removed?
-                # position_bias[:, :, 1:, 1:] = torch.finfo(position_bias.dtype).min
-                # attn_metadata.attn_bias = [pb[None, :, :seq_len, :seq_len] for pb in position_bias]
-                attn_metadata.attn_bias = [pb[None, :, :seq_len, :seq_len] for pb, sq in zip(position_bias, attn_metadata.seq_lens)]
-                # attn_metadata.attn_bias = [position_bias[:, :, :1, :seq_len]]
-                print("[DECODER but xformers prefill] Bias shape", attn_metadata.attn_bias[0].shape)
+                print(f"[{self.prefix}][DECODER but xformers prefill] Seq lens vs Encoder seqlens", attn_metadata.seq_lens, attn_metadata.encoder_seq_lens)
+                # Causal mask for prefill.
+                attn_bias = [LowerTriangularMaskWithTensorBias(pb[None, :, :sq, :sq]) for pb, sq in zip(position_bias, attn_metadata.seq_lens)]
             else:
-                # Repeat along dim0: (num_seqs, n_heads, 1, L)
-                # TODO (NickLucche): allow single bias for whole batch to avoid extra-copy.
-                # TODO this needs to be block aligned!!
-                # position_bias = self.compute_bias(seq_len, block_aligned_seq_len).repeat(num_seqs, 1, 1, 1)
-                position_bias = self.compute_bias(1, block_aligned_seq_len).repeat(num_seqs, 1, 1, 1)
-                # position_bias = self.compute_bias(seq_len, seq_len).repeat(num_seqs, 1, 1, 1)
-                print(f"[{self.prefix}][DECODING] Seq len compute bias/shape", seq_len, seq_len)
-                # position_bias[:, :, seq_len:, seq_len:] = torch.finfo(position_bias.dtype).min
-                attn_metadata.attn_bias = [position_bias]
-                # attn_metadata.attn_bias = [position_bias[:, :, :seq_len, :seq_len]]
-                print("Bias shape", attn_metadata.attn_bias[0].shape)
-            # TODO set attn bias
+                # Decoder decoding stage, uses PagedAttention, hence sequence
+                # padding/alignment to `block_size` is required. Expected 
+                # number of queries is always 1 (MQA not supported).  
+                seq_len = attn_metadata.max_decode_seq_len
+                block_aligned_seq_len = (seq_len + block_size - 1) // block_size * block_size
+                
+                position_bias = self.compute_bias(seq_len, block_aligned_seq_len)
+                # Bias for the last query, the one at current decoding step.
+                position_bias = position_bias[:, :, -1:, :].repeat(num_seqs, 1, 1, 1)
+                print(f"[{self.prefix}]****[DECODING]***** Seq len compute bias/shape", seq_len, block_aligned_seq_len, position_bias.shape)
+                # No explicit masking required, this is done inside the 
+                # paged attention kernel based on the sequence length. 
+                attn_bias = [position_bias]
+                
+            # NOTE Assign bias term on metadata based on attn type: 
+            # ENCODER->`encoder_attn_bias`, DECODER->`attn_bias`
+            _set_attn_bias(attn_metadata, attn_bias, self.attn_type)
+            print("Bias shape", attn_bias[0].shape)
         elif not self.has_relative_attention_bias and not is_profile_run:
             # Encoder/Decoder Self-Attention Layer, attn bias already cached.
             assert attn_bias is not None
-
-            # masking extra bias entries is done in the kernel
-            # mask = (seq_range >= prompt_lens).unsqueeze(1).unsqueeze(3)
-            # position_bias *= mask
-            # xformers masking
-                # for i in range(batch_size):
-                #     input_metadata.attn_bias[
-                #         i, :, :,
-                #         input_metadata.prompt_lens[i]:, ] = torch.finfo(
-                #             input_metadata.attn_bias.dtype).min
 
         attn_output = self.attn(q,
                         k,
