@@ -1,29 +1,28 @@
 from transformers import AutoModelForSeq2SeqLM
-from ....conftest import (DecoderPromptType, HfRunner, VllmRunner, ExplicitEncoderDecoderPrompt)
+from ....conftest import (DecoderPromptType, HfRunner, VllmRunner,
+                          ExplicitEncoderDecoderPrompt)
 from typing import List, Optional, Tuple, Type, Dict, Any
 from ...utils import check_logprobs_close
 from .utils import vllm_to_hf_output
 
 
-
-# TODO docs
 def compare_hf_vllm_logprobs(
-    hf_runner: Type[HfRunner],
-    vllm_runner: Type[VllmRunner],
-    prompts: List[ExplicitEncoderDecoderPrompt[str, str]],
-    decoder_prompt_type: DecoderPromptType,
-    model: str,
-    *,
-    dtype: str,
-    max_tokens: int,
-    num_logprobs: int,
-    tensor_parallel_size: int,
-    distributed_executor_backend: Optional[str] = None,
-    vllm_runner_kwargs: Optional[Dict[str, Any]] = dict(),
-) -> None:
+        hf_runner: Type[HfRunner],
+        vllm_runner: Type[VllmRunner],
+        prompts: List[ExplicitEncoderDecoderPrompt[str, str]],
+        decoder_prompt_type: DecoderPromptType,
+        model: str,
+        *,
+        dtype: str,
+        max_tokens: int,
+        num_logprobs: int,
+        tensor_parallel_size: int,
+        distributed_executor_backend: Optional[str] = None,
+        vllm_runner_kwargs: Optional[Dict[str, Any]] = dict(),
+        hf_tokens_to_skip: int = 0) -> None:
     '''
-    Test the vLLM BART model for a variety of encoder/decoder input prompts,
-    by validating it against HuggingFace (HF) BART.
+    Test the provided model for a variety of encoder/decoder input prompts,
+    by validating it against corresponding HuggingFace (HF).
 
     Arguments:
 
@@ -83,9 +82,8 @@ def compare_hf_vllm_logprobs(
     discard the first decoded token from the HF output before comparing it
     to vLLM.
 
-    To that end, when testing the scenario where the decoder prompt is None
-    (and only in that one scenario), this test skips the first HF decoded
-    token during the process of validating the vLLM decoded output.
+    To that end, `hf_tokens_to_skip` must be set to the number of HF decoded 
+    tokens to skip during the process of validating the vLLM decoded output.
     '''
 
     # NOTE: take care of the order. run vLLM first, and then run HF.
@@ -107,7 +105,8 @@ def compare_hf_vllm_logprobs(
                      dtype=dtype,
                      tensor_parallel_size=tensor_parallel_size,
                      distributed_executor_backend=distributed_executor_backend,
-                     enforce_eager=True, **vllm_runner_kwargs) as vllm_model:
+                     enforce_eager=True,
+                     **vllm_runner_kwargs) as vllm_model:
         vllm_outputs = vllm_model.generate_encoder_decoder_greedy_logprobs(
             prompts, max_tokens, num_logprobs)
 
@@ -132,9 +131,6 @@ def compare_hf_vllm_logprobs(
             **hf_kwargs,
         ))
 
-    hf_skip_tokens = (1
-                      if decoder_prompt_type == DecoderPromptType.NONE else 0)
-
     check_logprobs_close(
         outputs_0_lst=hf_outputs,
         outputs_1_lst=[
@@ -143,5 +139,5 @@ def compare_hf_vllm_logprobs(
         ],
         name_0="hf",
         name_1="vllm",
-        num_outputs_0_skip_tokens=hf_skip_tokens,
+        num_outputs_0_skip_tokens=hf_tokens_to_skip,
     )

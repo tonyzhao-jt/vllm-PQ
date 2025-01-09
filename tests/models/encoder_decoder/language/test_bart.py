@@ -2,14 +2,11 @@
 
 Run `pytest tests/models/encoder_decoder/language/test_bart.py`.
 """
-from typing import List, Optional, Tuple, Type
-
 import pytest
 
-from ....conftest import (DecoderPromptType, ExplicitEncoderDecoderPrompt,
-                          HfRunner, VllmRunner)
+from ....conftest import DecoderPromptType
 from ....utils import multi_gpu_test
-from .utils import compare_hf_vllm_logprobs
+from .conftest import compare_hf_vllm_logprobs
 
 
 @pytest.mark.parametrize(
@@ -37,7 +34,7 @@ def test_models(hf_runner, vllm_runner, example_encoder_decoder_prompts, model,
         max_tokens=max_tokens,
         num_logprobs=num_logprobs,
         tensor_parallel_size=1,
-    )
+        hf_tokens_to_skip=int(decoder_prompt_type == DecoderPromptType.NONE))
 
 
 @multi_gpu_test(num_gpus=2)

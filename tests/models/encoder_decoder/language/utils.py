@@ -2,6 +2,7 @@ from typing import List, Optional, Tuple
 from ....conftest import (DecoderPromptType)
 from vllm.sequence import SampleLogprobs
 
+
 def vllm_to_hf_output(
     vllm_output: Tuple[List[int], str, Optional[SampleLogprobs]],
     decoder_prompt_type: DecoderPromptType,
