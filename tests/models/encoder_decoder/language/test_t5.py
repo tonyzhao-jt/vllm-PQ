@@ -4,13 +4,13 @@ Based on tests/models/encoder_decoder/language/test_bart.py.
 Run `pytest tests/models/encoder_decoder/language/test_t5.py`.
 """
 import pytest
-from vllm.attention.selector import global_force_attn_backend_context_manager
+
+from tests.utils import multi_gpu_test
+from vllm.attention.selector import (_Backend,
+                                     global_force_attn_backend_context_manager)
 
 from ....conftest import DecoderPromptType
-from ....utils import multi_gpu_test
 from .conftest import compare_hf_vllm_logprobs
-import torch
-from vllm.attention.selector import _Backend
 
 
 @pytest.mark.parametrize(
@@ -44,24 +44,6 @@ def test_models(hf_runner, vllm_runner, example_encoder_decoder_prompts, model,
             num_logprobs=num_logprobs,
             tensor_parallel_size=1,
             vllm_runner_kwargs=vllm_kwargs)
-
-
-@pytest.fixture
-def dist_init():
-    from vllm.distributed import init_distributed_environment, cleanup_dist_env_and_memory, initialize_model_parallel
-    import tempfile
-    temp_file = tempfile.mkstemp()[1]
-    init_distributed_environment(
-        world_size=1,
-        rank=0,
-        distributed_init_method=f"file://{temp_file}",
-        local_rank=0,
-        backend="nccl",
-    )
-    initialize_model_parallel(1, 1)
-    yield
-    cleanup_dist_env_and_memory()
-
 
 
 @multi_gpu_test(num_gpus=2)
