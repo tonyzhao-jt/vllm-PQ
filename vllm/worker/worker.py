@@ -21,7 +21,7 @@ from vllm.platforms import current_platform
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import (ExecuteModelRequest, IntermediateTensors,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta)
-from vllm.utils import GiB_bytes, memory_profiling
+from vllm.utils import GiB_bytes, is_pin_memory_available, memory_profiling
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.enc_dec_model_runner import EncoderDecoderModelRunner
 from vllm.worker.model_runner import GPUModelRunnerBase, ModelRunner
@@ -94,6 +94,11 @@ class Worker(LocalOrDistributedWorkerBase):
         # Initialize gpu_cache as pooling models don't initialize kv_caches
         self.gpu_cache: Optional[List[List[torch.Tensor]]] = None
         self._seq_group_metadata_cache: Dict[str, SequenceGroupMetadata] = {}
+
+        # Uninitialized buffer for swapping in/out blocks. Will be initialized
+        # by initialize_cache.
+        self.blocks_to_swap_in_buffer: torch.Tensor
+        self.blocks_to_swap_out_buffer: torch.Tensor
 
         # Torch profiler. Enabled and configured through env vars:
         # VLLM_TORCH_PROFILER_DIR=/path/to/save/trace
@@ -274,6 +279,18 @@ class Worker(LocalOrDistributedWorkerBase):
         self._init_cache_engine()
         self._warm_up_model()
 
+        # Initialize the buffer for swapping in/out blocks.
+        max_num_blocks = max(num_gpu_blocks, num_cpu_blocks)
+        use_pin_memory = is_pin_memory_available()
+        self.blocks_to_swap_in_buffer = torch.zeros((max_num_blocks, 2),
+                                                    dtype=torch.int64,
+                                                    device="cpu",
+                                                    pin_memory=use_pin_memory)
+        self.blocks_to_swap_out_buffer = torch.zeros((max_num_blocks, 2),
+                                                     dtype=torch.int64,
+                                                     device="cpu",
+                                                     pin_memory=use_pin_memory)
+
     def _init_cache_engine(self):
         assert self.cache_config.num_gpu_blocks is not None
         self.cache_engine = [
@@ -315,6 +332,16 @@ class Worker(LocalOrDistributedWorkerBase):
         blocks_to_swap_out = torch.tensor(execute_model_req.blocks_to_swap_out,
                                           device="cpu",
                                           dtype=torch.int64).view(-1, 2)
+        swap_in_cnt = blocks_to_swap_in.size(0)
+        swap_out_cnt = blocks_to_swap_out.size(0)
+
+        # The buffer will be allocated only if the cache engines are initialized
+        if hasattr(self, "blocks_to_swap_in_buffer"):
+            self.blocks_to_swap_in_buffer[:swap_in_cnt] = blocks_to_swap_in
+            self.blocks_to_swap_out_buffer[:swap_out_cnt] = blocks_to_swap_out
+            blocks_to_swap_in = self.blocks_to_swap_in_buffer[:swap_in_cnt]
+            blocks_to_swap_out = self.blocks_to_swap_out_buffer[:swap_out_cnt]
+
         # `blocks_to_copy` is a gpu tensor. The src and tgt of
         # blocks to copy are in the same device, and `blocks_to_copy`
         # can be used directly within cuda kernels.
