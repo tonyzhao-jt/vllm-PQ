@@ -228,6 +228,7 @@ def test_paged_attention(
             block_size,
             max_seq_len,
             alibi_slopes,
+            None,  # TODO add custom bias
             kv_cache_dtype,
             k_scale,
             v_scale,
@@ -265,6 +266,7 @@ def test_paged_attention(
             block_size,
             max_seq_len,
             alibi_slopes,
+            None,
             kv_cache_dtype,
             k_scale,
             v_scale,
