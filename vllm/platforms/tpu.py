@@ -48,6 +48,15 @@ class TpuPlatform(Platform):
         return True
 
     @classmethod
+    def is_pin_memory_available(cls):
+        logger.warning("Pin memory is not supported on TPU.")
+        return False
+    
+    @classmethod
+    def get_punica_wrapper(cls) -> str:
+        return "vllm.lora.punica_wrapper.punica_tpu.PunicaWrapperTPU"
+
+    @classmethod
     def inference_mode(cls):
         return torch.no_grad()
 
