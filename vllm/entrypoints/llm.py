@@ -7,6 +7,7 @@ from typing import (Any, Callable, ClassVar, Dict, List, Optional, Sequence,
 import cloudpickle
 from tqdm import tqdm
 from typing_extensions import deprecated
+import torch
 
 from vllm import envs
 from vllm.beam_search import (BeamSearchInstance, BeamSearchOutput,
@@ -376,6 +377,7 @@ class LLM:
         sampling_params: Optional[Union[SamplingParams,
                                         Sequence[SamplingParams]]] = None,
         prompt_token_ids: Optional[Union[List[int], List[List[int]]]] = None,
+        prompt_embeds: Optional[torch.Tensor] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
@@ -439,6 +441,9 @@ class LLM:
         else:
             parsed_prompts = cast(Union[PromptType, Sequence[PromptType]],
                                   prompts)
+
+        if prompt_embeds is not None:
+            parsed_prompts.prompt_embeds = prompt_embeds
 
         if isinstance(guided_options_request, dict):
             if len(guided_options_request) > 1:
@@ -1117,6 +1122,7 @@ class LLM:
         self,
         prompts: Optional[Union[str, List[str]]],
         prompt_token_ids: Optional[Union[List[int], List[List[int]]]],
+        prompt_embeds: Optional[torch.Tensor] = None,
     ):
         # skip_tokenizer_init is now checked in engine
 
