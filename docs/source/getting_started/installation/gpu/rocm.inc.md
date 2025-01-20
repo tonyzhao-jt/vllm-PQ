@@ -59,7 +59,7 @@ Currently, there are no pre-built ROCm wheels.
     cd flash-attention
     git checkout 3cea2fb
     git submodule update --init
-    GPU_ARCHS="gfx90a" python3 setup.py install
+    GPU_ARCHS="gfx90a" VLLM_TARGET_DEVICE='rocm' VLLM_ROCM_VERSION=6.2 pip install install .
     cd ..
     ```
 
@@ -72,24 +72,15 @@ Currently, there are no pre-built ROCm wheels.
     ```bash
     $ pip install --upgrade pip
 
-    # Install PyTorch
-    $ pip uninstall torch -y
-    $ pip install --no-cache-dir --pre torch --index-url https://download.pytorch.org/whl/rocm6.2
-
     # Build & install AMD SMI
     $ pip install /opt/rocm/share/amd_smi
 
-    # Install dependencies
-    $ pip install --upgrade numba scipy huggingface-hub[cli]
-    $ pip install "numpy<2"
-    $ pip install -r requirements-rocm.txt
-
     # Build vLLM for MI210/MI250/MI300.
     $ export PYTORCH_ROCM_ARCH="gfx90a;gfx942"
-    $ python3 setup.py develop
+    $ VLLM_TARGET_DEVICE='rocm' VLLM_ROCM_VERSION=6.2 pip install -v -e .
     ```
 
-    This may take 5-10 minutes. Currently, `pip install .` does not work for ROCm installation.
+    This will take a while, especially if using CK flash attention.
 
 <!--- pyml disable-num-lines 5 ul-indent-->
     :::{tip}

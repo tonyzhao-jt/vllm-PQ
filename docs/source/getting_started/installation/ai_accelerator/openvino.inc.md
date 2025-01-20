@@ -23,20 +23,13 @@ First, install Python. For example, on Ubuntu 22.04, you can run:
 
 ```console
 sudo apt-get update  -y
-sudo apt-get install python3
+sudo apt-get install python3-pip
 ```
 
-Second, install prerequisites vLLM OpenVINO backend installation:
+Install vLLM with OpenVINO backend:
 
 ```console
-pip install --upgrade pip
-pip install -r requirements-build.txt --extra-index-url https://download.pytorch.org/whl/cpu
-```
-
-Finally, install vLLM with OpenVINO backend:
-
-```console
-PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu" VLLM_TARGET_DEVICE=openvino python -m pip install -v .
+PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu" VLLM_TARGET_DEVICE=openvino pip3 install -v .
 ```
 
 :::{tip}
