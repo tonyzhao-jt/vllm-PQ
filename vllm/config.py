@@ -338,6 +338,8 @@ class ModelConfig:
             sliding_window_len=self.get_hf_config_sliding_window(),
             spec_target_max_model_len=spec_target_max_model_len,
             encoder_config=self.encoder_config)
+        self.hf_config.max_position_embeddings = self.max_model_len
+        self.hf_text_config.max_position_embeddings = self.max_model_len
         self.served_model_name = get_served_model_name(model,
                                                        served_model_name)
         self.multimodal_config = self._init_multimodal_config(
@@ -636,6 +638,23 @@ class ModelConfig:
                 "CUDA graph is not supported on BitAndBytes 8bit yet, "
                 "fallback to the eager mode.")
             self.enforce_eager = True
+
+    def verify_dual_chunk_attention_config(
+        self,
+        load_config: "LoadConfig",
+    ) -> None:
+        if hasattr(self.hf_config, "dual_chunk_attention_config"):
+            # Try loading the sparse attention config
+            from vllm.model_executor.model_loader.weight_utils import (
+                get_sparse_attention_config)
+            sparse_attn_config = get_sparse_attention_config(self, load_config)
+            if sparse_attn_config:
+                self.hf_config.dual_chunk_attention_config[
+                    "sparse_attention_config"] = sparse_attn_config
+                if "sparse_attention_enabled" not in \
+                        self.hf_config.dual_chunk_attention_config:
+                    self.hf_config.dual_chunk_attention_config[
+                        "sparse_attention_enabled"] = True
 
     def verify_async_output_proc(self, parallel_config, speculative_config,
                                  device_config) -> None:
@@ -3139,6 +3158,8 @@ class VllmConfig:
                                                        self.speculative_config,
                                                        self.device_config)
             self.model_config.verify_with_parallel_config(self.parallel_config)
+            self.model_config.verify_dual_chunk_attention_config(
+                self.load_config)
 
         if self.cache_config is not None:
             self.cache_config.verify_with_parallel_config(self.parallel_config)
