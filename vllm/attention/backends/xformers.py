@@ -577,6 +577,7 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                     prefill_meta.context_lens_tensor,
                     prefill_meta.max_query_len,
                     self.alibi_slopes,
+                    prefill_meta.attn_bias,
                     self.sliding_window,
                     layer._k_scale,
                     layer._v_scale,
@@ -605,6 +606,9 @@ class XFormersImpl(AttentionImpl[XFormersMetadata]):
                 self.num_kv_heads,
                 self.scale,
                 self.alibi_slopes,
+                # TODO (NickLucche) cross_attn_bias not needed for T5-like
+                # models, abstract bias selection if needed.
+                decode_meta.attn_bias,
                 layer._k_scale,
                 layer._v_scale,
             )
