@@ -18,6 +18,7 @@ from vllm.config import (CacheConfig, CompilationConfig, ConfigFormat,
 from vllm.executor.executor_base import ExecutorBase
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
+from vllm.plugins import load_general_plugins
 from vllm.transformers_utils.utils import check_gguf_file
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import FlexibleArgumentParser, StoreBoolean
@@ -198,6 +199,8 @@ class EngineArgs:
     enable_sleep_mode: bool = False
 
     calculate_kv_scales: Optional[bool] = None
+
+    additional_config: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if not self.tokenizer:
@@ -956,6 +959,10 @@ class EngineArgs:
             'be loaded from the model checkpoint if available. '
             'Otherwise, the scales will default to 1.0.')
 
+        parser.add_argument("--additional-config",
+                            type=json.loads,
+                            default=None,
+                            help="Additional config for the engine. ")
         return parser
 
     @classmethod
@@ -1014,6 +1021,9 @@ class EngineArgs:
     def create_engine_config(self,
                              usage_context: Optional[UsageContext] = None
                              ) -> VllmConfig:
+        from vllm.platforms import current_platform
+        current_platform.pre_register_and_update()
+
         if envs.VLLM_USE_V1:
             self._override_v1_engine_args(usage_context)
 
@@ -1257,6 +1267,7 @@ class EngineArgs:
             prompt_adapter_config=prompt_adapter_config,
             compilation_config=self.compilation_config,
             kv_transfer_config=self.kv_transfer_config,
+            additional_config=self.additional_config,
         )
 
         if envs.VLLM_USE_V1:
@@ -1317,6 +1328,12 @@ class AsyncEngineArgs(EngineArgs):
         parser.add_argument('--disable-log-requests',
                             action='store_true',
                             help='Disable logging requests.')
+        # initialization plugin to update the parser, for example, The plugin
+        # may adding a new kind of quantization method to --quantization
+        # argument or a new device to --device argument.
+        load_general_plugins()
+        from vllm.platforms import current_platform
+        current_platform.pre_register_and_update(parser)
         return parser
 
 
