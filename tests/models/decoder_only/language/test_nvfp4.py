@@ -1,6 +1,6 @@
 # flake8: noqa
-"""Tests Model Optimizer fp8 models against ground truth generation
-Note: these tests will only pass on H100
+"""Tests Model Optimizer nvfp4 models against ground truth generation
+Note: these tests will only pass on B200
 """
 import os
 from typing import List
@@ -15,18 +15,18 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 MAX_MODEL_LEN = 1024
 
-MODELS = ["nvidia/Llama-3.3-8B-Instruct-FP4"]
+MODELS = ["nvidia/Llama-3.1-8B-Instruct-FP4"]
 
 EXPECTED_STRS_MAP = {
-    "nvidia/Llama-3.1-8B-Instruct-FP8": [
-        "You're referring to VLLM, a high-performance Large Language Model (LLM) inference and",
+    "nvidia/Llama-3.1-8B-Instruct-FP4": [
+        "It seems like you're referring to VLLM, a high-throughput and memory-efficient inference and",
         'Here are the major milestones in the development of artificial intelligence (AI) from 1950 to ',
-        'The comparison between artificial intelligence (AI) and human intelligence in terms of processing information is a complex and',
-        'A neural network is a complex system modeled after the human brain, consisting of interconnected nodes or "ne',
-        '**The Spark of Imagination**\n\nZeta-5, a sleek and efficient robot, whir',
-        'The COVID-19 pandemic has had a profound impact on global economic structures and business models, leading to',
+        'The processing of information by artificial intelligence (AI) and human intelligence (HI) differs in several ways',
+        "A neural network is a complex system inspired by the structure and function of the human brain. It's",
+        'In a world of wires and circuits, a robot named Zeta whirred to life in the',
+        'The COVID-19 pandemic has had a profound impact on global economic structures and future business models, leading',
         'The Mona Lisa, painted by Leonardo da Vinci in the early 16th century, is one of',
-        'Here are the translations:\n\n**Japanese:** 「早起きは早く獲物をとる'
+        'Here are the translations:\n\n**Japanese:** (Hajimete no tori wa mushi o'
     ]
 }
 
@@ -40,8 +40,8 @@ EXPECTED_STRS_MAP = {
     reason=
     "Prevent unstable test based on golden strings from breaking the build.")
 @pytest.mark.quant_model
-@pytest.mark.skipif(not is_quant_method_supported("fp4"),
-                    reason="fp4 is not supported on this GPU type.")
+@pytest.mark.skipif(not is_quant_method_supported("nvfp4"),
+                    reason="nvfp4 is not supported on this GPU type.")
 @pytest.mark.parametrize("model_name", MODELS)
 def test_models(example_prompts, model_name) -> None:
     model = LLM(
