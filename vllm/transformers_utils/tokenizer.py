@@ -17,12 +17,13 @@ from vllm.lora.request import LoRARequest
 from vllm.transformers_utils.tokenizers import MistralTokenizer
 from vllm.transformers_utils.utils import check_gguf_file
 from vllm.utils import make_async
-from vllm.transformers_utils.tokenizer_base import TokenizerBase, TokenizerRegistry
+from vllm.transformers_utils.tokenizer_base import (TokenizerBase,
+                                                    TokenizerRegistry)
 
 logger = init_logger(__name__)
 
 AnyTokenizer = Union[PreTrainedTokenizer, PreTrainedTokenizerFast,
-                     MistralTokenizer]
+                     TokenizerBase]
 
 
 def decode_tokens(
