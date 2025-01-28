@@ -18,6 +18,7 @@ from mistral_common.tokens.tokenizers.sentencepiece import (
     SentencePieceTokenizer)
 from mistral_common.tokens.tokenizers.tekken import (SpecialTokenPolicy,
                                                      Tekkenizer)
+from vllm.transformers_utils.tokenizer_base import TokenizerBase
 
 from vllm.logger import init_logger
 from vllm.utils import is_list_of
@@ -106,7 +107,7 @@ def find_tokenizer_file(files: List[str]):
     return matched_files[0]
 
 
-class MistralTokenizer:
+class MistralTokenizer(TokenizerBase):
 
     def __init__(self, tokenizer: PublicMistralTokenizer) -> None:
         self.mistral = tokenizer

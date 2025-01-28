@@ -453,10 +453,10 @@ class ModelConfig:
 
     def _verify_tokenizer_mode(self) -> None:
         tokenizer_mode = self.tokenizer_mode.lower()
-        if tokenizer_mode not in ["auto", "slow", "mistral"]:
+        if tokenizer_mode not in ["auto", "slow", "mistral", "custom"]:
             raise ValueError(
                 f"Unknown tokenizer mode: {self.tokenizer_mode}. Must be "
-                "either 'auto', 'slow' or 'mistral'.")
+                "either 'auto', 'slow', 'mistral' or 'custom'.")
         self.tokenizer_mode = tokenizer_mode
 
     def _get_preferred_task(
