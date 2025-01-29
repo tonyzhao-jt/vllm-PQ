@@ -1051,9 +1051,9 @@ class LLM:
 
     def _cross_encoding_score(
         self,
-        tokenizer: Union[AnyTokenizer],
-        text_1: List[Union[str, TextPrompt, TokensPrompt]],
-        text_2: List[Union[str, TextPrompt, TokensPrompt]],
+        tokenizer: AnyTokenizer,
+        text_1: List[str],
+        text_2: List[str],
         truncate_prompt_tokens: Optional[int] = None,
         use_tqdm: bool = True,
         lora_request: Optional[Union[List[LoRARequest], LoRARequest]] = None,

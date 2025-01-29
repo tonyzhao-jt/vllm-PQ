@@ -32,6 +32,16 @@ class TokenizerBase(ABC):
     @abstractmethod
     def eos_token_id(self) -> int:
         raise NotImplementedError()
+    
+    @property
+    @abstractmethod
+    def sep_token_id(self) -> int:
+        raise NotImplementedError()
+
+    @property
+    @abstractmethod
+    def pad_token_id(self) -> int:
+        raise NotImplementedError()
 
     @property
     @abstractmethod
@@ -55,7 +65,8 @@ class TokenizerBase(ABC):
     @abstractmethod
     def __call__(
         self,
-        prompt: Union[str, List[str], List[int]],
+        text: Union[str, List[str], List[int]],
+        text_pair: Optional[str] = None,
         add_special_tokens: bool = False,
         truncation: bool = False,
         max_length: Optional[int] = None,
@@ -73,14 +84,16 @@ class TokenizerBase(ABC):
     @abstractmethod
     def encode_one(
         self,
-        prompt: str,
+        text: str,
         truncation: bool = False,
         max_length: Optional[int] = None,
     ) -> List[int]:
         raise NotImplementedError()
 
     @abstractmethod
-    def encode(self, prompt: str) -> List[int]:
+    def encode(self,
+               text: str,
+               add_special_tokens: Optional[bool] = None) -> List[int]:
         raise NotImplementedError()
 
     @abstractmethod
@@ -114,7 +127,7 @@ class TokenizerRegistry:
     REGISTRY: Dict[str, Tuple[str, str]] = {}
 
     @staticmethod
-    def register(name: str, module: str, class_name: str) -> TokenizerBase:
+    def register(name: str, module: str, class_name: str) -> None:
         TokenizerRegistry.REGISTRY[name] = (module, class_name)
 
     @staticmethod
