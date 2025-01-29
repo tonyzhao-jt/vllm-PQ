@@ -6,7 +6,8 @@ from argparse import Namespace
 from typing import Any, ClassVar, Dict, List, Literal, Optional, Set, Union
 
 import torch
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (AliasChoices, BaseModel, ConfigDict, Field,
+                      model_validator)
 from typing_extensions import Annotated
 
 from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
@@ -15,6 +16,7 @@ from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import (BeamSearchParams, GuidedDecodingParams,
                                   RequestOutputKind, SamplingParams)
 from vllm.sequence import Logprob
+from vllm.transformers_utils.tokenizer import AnyTokenizer
 from vllm.utils import random_uuid, resolve_obj_by_qualname
 
 logger = init_logger(__name__)
@@ -243,6 +245,14 @@ class ChatCompletionRequest(OpenAIBaseModel):
     top_k: Optional[int] = None
     min_p: Optional[float] = None
     repetition_penalty: Optional[float] = None
+    dry_multiplier: Optional[float] = None
+    dry_base: Optional[float] = None
+    dry_allowed_length: Optional[int] = None
+    dry_sequence_breakers: Optional[Union[List[str], List[int]]] = Field(
+        default=["\n", ":", "\"", "*"])
+    dry_range: Optional[int] = Field(default=0,
+                                     validation_alias=AliasChoices(
+                                         "dry_range", "dry_penalty_last_n"))
     length_penalty: float = 1.0
     stop_token_ids: Optional[List[int]] = Field(default_factory=list)
     include_stop_str_in_output: bool = False
@@ -405,6 +415,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
     def to_sampling_params(
             self,
+            tokenizer: AnyTokenizer,
             default_max_tokens: int,
             logits_processor_pattern: Optional[str],
             default_sampling_params: Optional[dict] = None) -> SamplingParams:
@@ -454,6 +465,16 @@ class ChatCompletionRequest(OpenAIBaseModel):
                 if self.guided_decoding_backend is None:
                     self.guided_decoding_backend = "xgrammar"
 
+        dry_sequence_breaker_ids = []
+        if isinstance(self.dry_sequence_breakers,
+                      list) and self.dry_sequence_breakers:
+            if isinstance(self.dry_sequence_breakers[0], str):
+                for s in self.dry_sequence_breakers:
+                    token_id = tokenizer.encode(f'a{s}')[-1]
+                    dry_sequence_breaker_ids.append(token_id)
+            elif isinstance(self.dry_sequence_breakers[0], int):
+                dry_sequence_breaker_ids = list(self.dry_sequence_breakers)
+
         guided_decoding = GuidedDecodingParams.from_optional(
             json=self._get_guided_json_from_tool() or self.guided_json,
             regex=self.guided_regex,
@@ -469,6 +490,11 @@ class ChatCompletionRequest(OpenAIBaseModel):
             presence_penalty=self.presence_penalty,
             frequency_penalty=self.frequency_penalty,
             repetition_penalty=repetition_penalty,
+            dry_multiplier=self.dry_multiplier,
+            dry_base=self.dry_base,
+            dry_allowed_length=self.dry_allowed_length,
+            dry_sequence_breaker_ids=dry_sequence_breaker_ids,
+            dry_range=self.dry_range,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
@@ -658,6 +684,14 @@ class CompletionRequest(OpenAIBaseModel):
     top_k: Optional[int] = None
     min_p: Optional[float] = None
     repetition_penalty: Optional[float] = None
+    dry_multiplier: Optional[float] = None
+    dry_base: Optional[float] = None
+    dry_allowed_length: Optional[int] = None
+    dry_sequence_breakers: Optional[Union[List[str], List[int]]] = Field(
+        default=["\n", ":", "\"", "*"])
+    dry_range: Optional[int] = Field(default=0,
+                                     validation_alias=AliasChoices(
+                                         "dry_range", "dry_penalty_last_n"))
     length_penalty: float = 1.0
     stop_token_ids: Optional[List[int]] = Field(default_factory=list)
     include_stop_str_in_output: bool = False
@@ -773,6 +807,7 @@ class CompletionRequest(OpenAIBaseModel):
 
     def to_sampling_params(
             self,
+            tokenizer: AnyTokenizer,
             default_max_tokens: int,
             logits_processor_pattern: Optional[str],
             default_sampling_params: Optional[dict] = None) -> SamplingParams:
@@ -810,6 +845,16 @@ class CompletionRequest(OpenAIBaseModel):
         if prompt_logprobs is None and self.echo:
             prompt_logprobs = self.logprobs
 
+        dry_sequence_breaker_ids = []
+        if isinstance(self.dry_sequence_breakers,
+                      list) and self.dry_sequence_breakers:
+            if isinstance(self.dry_sequence_breakers[0], str):
+                for s in self.dry_sequence_breakers:
+                    token_id = tokenizer.encode(f'a{s}')[-1]
+                    dry_sequence_breaker_ids.append(token_id)
+            elif isinstance(self.dry_sequence_breakers[0], int):
+                dry_sequence_breaker_ids = list(self.dry_sequence_breakers)
+
         echo_without_generation = self.echo and self.max_tokens == 0
 
         guided_json_object = None
@@ -832,6 +877,11 @@ class CompletionRequest(OpenAIBaseModel):
             presence_penalty=self.presence_penalty,
             frequency_penalty=self.frequency_penalty,
             repetition_penalty=repetition_penalty,
+            dry_multiplier=self.dry_multiplier,
+            dry_base=self.dry_base,
+            dry_allowed_length=self.dry_allowed_length,
+            dry_sequence_breaker_ids=dry_sequence_breaker_ids,
+            dry_range=self.dry_range,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
