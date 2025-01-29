@@ -11,6 +11,7 @@ QUANTIZATION_METHODS: List[str] = [
     "fp8",
     "fbgemm_fp8",
     "modelopt",
+    "nvfp4",
     # The order of gptq methods is important for config.py iteration over
     # override_quantization_method(..)
     "marlin",
@@ -93,7 +94,7 @@ def get_quantization_config(quantization: str) -> Type[QuantizationConfig]:
     from .hqq_marlin import HQQMarlinConfig
     from .ipex_quant import IPEXConfig
     from .marlin import MarlinConfig
-    from .modelopt import ModelOptFp8Config
+    from .modelopt import ModelOptFp8Config, ModelOptNvFp4Config
     from .neuron_quant import NeuronQuantConfig
     from .qqq import QQQConfig
     from .tpu_int8 import Int8TpuConfig
@@ -106,6 +107,7 @@ def get_quantization_config(quantization: str) -> Type[QuantizationConfig]:
         "fp8": Fp8Config,
         "fbgemm_fp8": FBGEMMFp8Config,
         "modelopt": ModelOptFp8Config,
+        "nvfp4": ModelOptNvFp4Config,
         # The order of gptq methods is important for config.py iteration over
         # override_quantization_method(..)
         "marlin": MarlinConfig,
