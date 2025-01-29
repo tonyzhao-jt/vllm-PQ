@@ -112,7 +112,7 @@ class OpenAIServingScores(OpenAIServing):
 
             input_pairs = make_pairs(request.text_1, request.text_2)
             for q, t in input_pairs:
-                request_prompt = f"{q}{tokenizer.sep_token}{t}"
+                request_prompt = f"{q}{tokenizer.sep_token_id}{t}"
 
                 tokenization_kwargs: Dict[str, Any] = {}
                 if truncate_prompt_tokens is not None:

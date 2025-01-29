@@ -209,7 +209,7 @@ class MistralTokenizer(TokenizerBase):
     @property
     def eos_token_id(self) -> int:
         return self.tokenizer.eos_id
-    
+
     @property
     def sep_token_id(self) -> int:
         raise NotImplementedError()
@@ -285,7 +285,12 @@ class MistralTokenizer(TokenizerBase):
         # `encode` should only be used for prompt completion
         # it should never be used for chat_completion.
         # For chat completion use `apply_chat_template`
-        return self.tokenizer.encode(text, bos=True, eos=False)
+        if add_special_tokens is not None:
+            return self.tokenizer.encode(text,
+                                         bos=add_special_tokens,
+                                         eos=add_special_tokens)
+        else:
+            return self.tokenizer.encode(text, bos=True, eos=False)
 
     def apply_chat_template(self,
                             messages: List["ChatCompletionMessageParam"],
