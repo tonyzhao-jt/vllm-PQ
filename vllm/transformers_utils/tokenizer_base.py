@@ -1,6 +1,7 @@
-from abc import ABC, abstractmethod
-from typing import List, Union, Dict, Optional, TYPE_CHECKING, Any, Tuple
 import importlib
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+
 if TYPE_CHECKING:
     from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
 

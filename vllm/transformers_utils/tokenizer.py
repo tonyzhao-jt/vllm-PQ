@@ -14,11 +14,11 @@ from transformers import (AutoTokenizer, PreTrainedTokenizer,
 from vllm.envs import VLLM_USE_MODELSCOPE
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
+from vllm.transformers_utils.tokenizer_base import (TokenizerBase,
+                                                    TokenizerRegistry)
 from vllm.transformers_utils.tokenizers import MistralTokenizer
 from vllm.transformers_utils.utils import check_gguf_file
 from vllm.utils import make_async
-from vllm.transformers_utils.tokenizer_base import (TokenizerBase,
-                                                    TokenizerRegistry)
 
 logger = init_logger(__name__)
 
@@ -190,10 +190,10 @@ def get_tokenizer(
                                                      revision=revision)
     elif tokenizer_mode == "custom":
         tokenizer = TokenizerRegistry.get_tokenizer(str(tokenizer_name),
-                *args,
-                revision=revision,
-                download_dir=download_dir,
-                **kwargs)
+                                                    *args,
+                                                    revision=revision,
+                                                    download_dir=download_dir,
+                                                    **kwargs)
     else:
         try:
             tokenizer = AutoTokenizer.from_pretrained(

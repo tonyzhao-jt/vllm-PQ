@@ -18,9 +18,9 @@ from mistral_common.tokens.tokenizers.sentencepiece import (
     SentencePieceTokenizer)
 from mistral_common.tokens.tokenizers.tekken import (SpecialTokenPolicy,
                                                      Tekkenizer)
-from vllm.transformers_utils.tokenizer_base import TokenizerBase
 
 from vllm.logger import init_logger
+from vllm.transformers_utils.tokenizer_base import TokenizerBase
 from vllm.utils import is_list_of
 
 if TYPE_CHECKING:
