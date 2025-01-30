@@ -232,8 +232,10 @@ class AttentionLayer(Protocol):
 
     _k_scale: torch.Tensor
     _v_scale: torch.Tensor
-    _k_scale_float: float
-    _v_scale_float: float
+    _k_scale_float: torch.Tensor
+    _v_scale_float: torch.Tensor
+    _q_scale: torch.Tensor
+    _prob_scale: torch.Tensor
 
     def forward(
         self,
@@ -273,6 +275,7 @@ class AttentionImpl(ABC, Generic[T]):
         value: torch.Tensor,
         kv_cache: torch.Tensor,
         attn_metadata: T,
+        fp8_out_scale: Optional[torch.Tensor] = None,
         output: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         raise NotImplementedError
