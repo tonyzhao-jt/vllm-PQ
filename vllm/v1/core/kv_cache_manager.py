@@ -72,8 +72,8 @@ class KVCacheManager:
         self.req_to_blocks: DefaultDict[str,
                                         List[KVCacheBlock]] = defaultdict(list)
 
-        # Prefix cache metrics.
-        self.prefix_caching_metrics = PrefixCachingMetrics()
+        # Prefix cache metrics. TODO: Make the interval configurable.
+        self.prefix_caching_metrics = PrefixCachingMetrics(interval=1000)
 
     @property
     def usage(self) -> float:
