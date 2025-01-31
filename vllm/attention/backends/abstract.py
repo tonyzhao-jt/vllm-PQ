@@ -168,7 +168,8 @@ class AttentionState(ABC, Generic[T]):
 
     @abstractmethod
     @contextmanager
-    def graph_capture(self, max_batch_size: int):
+    def graph_capture(self, max_batch_size: int,
+                      positions: Optional[torch.Tensor]):
         """Context manager used when capturing CUDA graphs."""
         yield
 
@@ -268,9 +269,25 @@ class AttentionImpl(ABC, Generic[T]):
     def forward(
         self,
         layer: AttentionLayer,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
+        query: torch.Tensor,  # For MLA hidden_states_or_cq
+        key: torch.Tensor,  # For MLA kv_c_normed
+        value: torch.Tensor,  # For MLA k_pe
+        kv_cache: torch.Tensor,
+        attn_metadata: T,
+        output: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class MLAAttentionImpl(AttentionImpl[T], Generic[T]):
+
+    @abstractmethod
+    def forward(
+        self,
+        layer: AttentionLayer,
+        hidden_states_or_cq: torch.Tensor,
+        kv_c_normed: torch.Tensor,
+        k_pe: torch.Tensor,
         kv_cache: torch.Tensor,
         attn_metadata: T,
         output: Optional[torch.Tensor] = None,

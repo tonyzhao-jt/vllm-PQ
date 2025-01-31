@@ -1066,6 +1066,7 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
             self.kv_cache_dtype,
             self.block_size,
             self.model_config.is_attention_free,
+            use_mla=self.model_config.use_mla,
         ) if needs_attn_backend else None
         if self.attn_backend:
             self.attn_state = self.attn_backend.get_state_cls()(
@@ -1467,8 +1468,9 @@ class GPUModelRunnerBase(ModelRunnerBase[TModelInputForGPU]):
                 dtype=self.model_config.dtype,
                 device=self.device)
 
-        with self.attn_state.graph_capture(max_batch_size), graph_capture(
-                self.device) as graph_capture_context:
+        with self.attn_state.graph_capture(
+                max_batch_size, input_positions), graph_capture(
+                    self.device) as graph_capture_context:
             # NOTE: Capturing the largest batch size first may help reduce the
             # memory usage of CUDA graph.
             for virtual_engine in range(
@@ -1973,7 +1975,8 @@ class CUDAGraphRunner(nn.Module):
 
         # Copy the input tensors to the input buffers.
         self.input_buffers["input_ids"].copy_(input_ids, non_blocking=True)
-        self.input_buffers["positions"].copy_(positions, non_blocking=True)
+        if positions is not None:
+            self.input_buffers["positions"].copy_(positions, non_blocking=True)
 
         if self.backend_name != "NO_ATTENTION":
             self.input_buffers["slot_mapping"].copy_(
