@@ -162,6 +162,17 @@ class PrometheusStatLogger(StatLoggerBase):
                 ],
                 labelnames=labelnames).labels(*labelvalues)
 
+        request_latency_buckets = [
+            0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0,
+            40.0, 50.0, 60.0
+        ]
+        self.histogram_e2e_time_request = \
+            prometheus_client.Histogram(
+                name="vllm:e2e_request_latency_seconds",
+                documentation="Histogram of e2e request latency in seconds.",
+                buckets=request_latency_buckets,
+                labelnames=labelnames).labels(*labelvalues)
+
     def log(self, scheduler_stats: SchedulerStats,
             iteration_stats: IterationStats):
         """Log to prometheus."""
@@ -176,6 +187,8 @@ class PrometheusStatLogger(StatLoggerBase):
 
         for finished_request in iteration_stats.finished_requests:
             self.counter_request_success[finished_request.finish_reason].inc()
+            self.histogram_e2e_time_request.observe(
+                finished_request.e2e_latency)
             self.histogram_num_prompt_tokens_request.observe(
                 finished_request.num_prompt_tokens)
             self.histogram_num_generation_tokens_request.observe(

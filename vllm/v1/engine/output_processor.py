@@ -40,7 +40,8 @@ class RequestState:
         self.is_prefilling = True
         self.queue = queue
 
-        self.stats = RequestStateStats(last_token_time=arrival_time)
+        self.stats = RequestStateStats(arrival_time=arrival_time,
+                                       last_token_time=arrival_time)
 
     @classmethod
     def from_new_request(

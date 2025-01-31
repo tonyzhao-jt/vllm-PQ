@@ -218,6 +218,9 @@ EXPECTED_METRICS_V1 = [
     "vllm:time_per_output_token_seconds_sum",
     "vllm:time_per_output_token_seconds_bucket",
     "vllm:time_per_output_token_seconds_count",
+    "vllm:e2e_request_latency_seconds_sum",
+    "vllm:e2e_request_latency_seconds_bucket",
+    "vllm:e2e_request_latency_seconds_count",
 ]
 
 

@@ -25,6 +25,7 @@ class RequestStateStats:
     """Stats that need to be tracked across delta updates."""
 
     num_generation_tokens: int = 0
+    arrival_time: float = 0.0
     last_token_time: float = 0.0
 
 
@@ -33,6 +34,7 @@ class FinishedRequestStats:
     """Stats associated with a finished request."""
 
     finish_reason: "FinishReason"
+    e2e_latency: float = 0.0
     num_prompt_tokens: int = 0
     num_generation_tokens: int = 0
 
@@ -77,7 +79,10 @@ class IterationStats:
     def update_from_finished_request(self, finish_reason: "FinishReason",
                                      request_output: "RequestOutput",
                                      request_state_stats: RequestStateStats):
+        now = time.time()
+        e2e_latency = now - request_state_stats.arrival_time
+
         self.finished_requests.append(
-            FinishedRequestStats(finish_reason,
+            FinishedRequestStats(finish_reason, e2e_latency,
                                  len(request_output.prompt_token_ids),
                                  request_state_stats.num_generation_tokens))
