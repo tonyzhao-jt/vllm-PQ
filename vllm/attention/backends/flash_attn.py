@@ -18,17 +18,20 @@ from vllm.attention.backends.utils import (
     get_seq_len_block_table_args, is_all_cross_attn_metadata_set,
     is_all_encoder_attn_metadata_set, is_block_tables_empty)
 from vllm.envs import VLLM_FLASH_ATTN_VERSION
+from vllm.logger import init_logger
 from vllm.multimodal import MultiModalPlaceholderMap
 from vllm.platforms import current_platform
 from vllm.utils import async_tensor_h2d, make_tensor_with_pad
+from vllm.vllm_flash_attn import (fa_version_unsupported_reason,
+                                  flash_attn_varlen_func,
+                                  flash_attn_with_kvcache,
+                                  is_fa_version_supported)
 
 if TYPE_CHECKING:
     from vllm.worker.model_runner import (ModelInputForGPUBuilder,
                                           ModelInputForGPUWithSamplingMetadata)
 
-from vllm.vllm_flash_attn import (flash_attn_varlen_func,
-                                  flash_attn_with_kvcache,
-                                  is_fa_version_supported)
+logger = init_logger(__name__)
 
 
 class FlashAttentionBackend(AttentionBackend):
@@ -230,6 +233,7 @@ class FlashAttentionMetadata(AttentionMetadata):
             slot_mapping=slot_mapping,
             multi_modal_placeholder_index_maps=self.
             multi_modal_placeholder_index_maps,
+            enable_kv_scales_calculation=self.enable_kv_scales_calculation,
             seq_lens=seq_lens,
             seq_lens_tensor=seq_lens_tensor,
             max_query_len=self.max_query_len,
@@ -274,6 +278,7 @@ class FlashAttentionMetadata(AttentionMetadata):
             num_decode_tokens=self.num_decode_tokens,
             slot_mapping=slot_mapping,
             multi_modal_placeholder_index_maps=None,
+            enable_kv_scales_calculation=True,
             seq_lens=None,
             seq_lens_tensor=seq_lens_tensor,
             max_decode_query_len=self.max_decode_query_len,
@@ -557,6 +562,7 @@ class FlashAttentionMetadataBuilder(
             num_decode_tokens=num_decode_tokens,
             seq_lens=seq_lens,
             multi_modal_placeholder_index_maps=placeholder_index_maps,
+            enable_kv_scales_calculation=True,
             seq_lens_tensor=seq_lens_tensor,
             max_query_len=max_query_len,
             max_decode_query_len=max_decode_query_len,
@@ -649,6 +655,11 @@ class FlashAttentionImpl(AttentionImpl):
             assert VLLM_FLASH_ATTN_VERSION in [2, 3]
             self.fa_version = VLLM_FLASH_ATTN_VERSION
 
+        if not is_fa_version_supported(self.fa_version):
+            logger.error("Cannot use FA version %d is not supported due to %s",
+                         self.fa_version,
+                         fa_version_unsupported_reason(self.fa_version))
+
         assert is_fa_version_supported(self.fa_version)
 
     def forward(
@@ -675,7 +686,7 @@ class FlashAttentionImpl(AttentionImpl):
         NOTE: It in-place updates the output tensor.
         """
         # NOTE(woosuk): FlashAttention does not support FP8 KV cache.
-        assert layer._k_scale == 1.0 and layer._v_scale == 1.0, (
+        assert layer._k_scale_float == 1.0 and layer._v_scale_float == 1.0, (
             "key/v_scale is not supported in FlashAttention.")
 
         assert output is not None, "Output tensor must be provided."
