@@ -73,10 +73,7 @@ class KVCacheManager:
                                         List[KVCacheBlock]] = defaultdict(list)
 
         # Prefix cache metrics.
-        self.prefix_caching_metrics: PrefixCachingMetrics = {
-            "query_total": 0,
-            "query_hit": 0,
-        }
+        self.prefix_caching_metrics = PrefixCachingMetrics()
 
     @property
     def usage(self) -> float:
@@ -88,21 +85,14 @@ class KVCacheManager:
         return 1.0 - (self.free_block_queue.num_free_blocks /
                       self.num_gpu_blocks)
 
-    def get_and_reset_prefix_cache_hit_rate(self) -> float:
-        """Get the overall hit rate of prefix caching and reset
-        the metrics.
+    @property
+    def prefix_cache_hit_rate(self) -> float:
+        """Get the prefix caching hit rate.
 
         Returns:
-            The hit rate of prefix caching (between 0.0 and 1.0).
+            The prefix caching hit rate.
         """
-        hit_rate = 0.0
-        if self.prefix_caching_metrics["query_total"] > 0:
-            hit_rate = self.prefix_caching_metrics[
-                "query_hit"] / self.prefix_caching_metrics["query_total"]
-
-        self.prefix_caching_metrics["query_hit"] = 0
-        self.prefix_caching_metrics["query_total"] = 0
-        return hit_rate
+        return self.prefix_caching_metrics.hit_rate
 
     def get_computed_blocks(
             self, request: Request) -> Tuple[List[KVCacheBlock], int]:
@@ -139,8 +129,10 @@ class KVCacheManager:
             else:
                 break
 
-        self.prefix_caching_metrics["query_total"] += len(block_hashes)
-        self.prefix_caching_metrics["query_hit"] += len(computed_blocks)
+        self.prefix_caching_metrics.add_request_query(
+            num_queries=len(block_hashes),
+            num_hits=len(computed_blocks),
+        )
 
         # NOTE(woosuk): Since incomplete blocks are not eligible for
         # sharing, `num_computed_tokens` is always a multiple of
@@ -305,6 +297,9 @@ class KVCacheManager:
         # Remove all hashes from all blocks.
         for block in self.block_pool:
             block.reset_hash()
+
+        # Reset the prefix caching metrics.
+        self.prefix_caching_metrics.reset()
 
         logger.info("Successfully reset prefix cache")
         return True
