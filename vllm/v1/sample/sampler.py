@@ -1,5 +1,5 @@
 """A layer that samples the next tokens from the model's outputs."""
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -24,20 +24,16 @@ class Sampler(nn.Module):
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> SamplerOutput:
-        needs_logprobs = sampling_metadata.max_num_logprobs > 0
+        needs_logprobs = sampling_metadata.max_num_logprobs is not None
         if needs_logprobs:
             # NOTE(woosuk): Use the original logits (before any penalties or
             # temperature scaling) for the top-k logprobs.
             # This is different from the V0 sampler, which uses the logits that
             # is used for sampling (after penalties and temperature scaling).
-            # NOTE: We compute logprobs first because the below ops may
-            # modify the logits tensor in-place (and we don't want to clone
-            # the logits tensor for memory efficiency).
-            topk_logprobs, topk_indices = self.get_topk_logprobs(
-                logits, sampling_metadata)
-        else:
-            topk_logprobs = None
-            topk_indices = None
+            # NOTE(rob): We have to clone the raw logits (at fp16) to
+            # compute logprobs AFTER sampling, since we need return
+            # the logprob of the sampled token.
+            raw_logits = logits.clone()
 
         # Use float32 for the logits.
         logits = logits.to(torch.float32)
@@ -50,12 +46,24 @@ class Sampler(nn.Module):
         # Use int32 to reduce the tensor size.
         sampled = sampled.to(torch.int32)
 
+        if needs_logprobs:
+            # Get sampled and topk token logprobs.
+            (
+                logprobs,
+                logprob_token_ids,
+                sampled_token_ranks,
+            ) = self.get_logprobs(raw_logits,
+                                  sampling_metadata.max_num_logprobs,
+                                  token_ids=sampled)
+        else:
+            logprobs, logprob_token_ids, sampled_token_ranks = None, None, None
+
+        # These are GPU tensors.
         sampler_output = SamplerOutput(
             sampled_token_ids=sampled,
-            logprob_token_ids=topk_indices,
-            logprobs=topk_logprobs,
-            prompt_logprob_token_ids=None,
-            prompt_logprobs=None,
+            logprob_token_ids=logprob_token_ids,
+            logprobs=logprobs,
+            sampled_token_ranks=sampled_token_ranks,
         )
         return sampler_output
 
@@ -102,19 +110,48 @@ class Sampler(nn.Module):
         )
         return sampled
 
-    def get_topk_logprobs(
+    def get_logprobs(
         self,
         logits: torch.Tensor,
-        sampling_metadata: SamplingMetadata,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        num_logprobs: Optional[int],
+        token_ids: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute logprobs from logits.
+
+        Also compute logprobs associated with `token_ids` and
+        concatenate to the output.
+
+        Args:
+          logits: (num tokens) x (vocab) tensor
+          num_logprobs: minimum number of logprobs to
+                        retain per token
+          token_ids: prompt tokens (if prompt logprobs)
+                     or sampled tokens (if sampled
+                     logprobs); 1D token ID tensor
+                     with (num tokens) elements
+
+        Returns:
+          Top-k float logprobs tensor, (num tokens) x (num_logprobs + 1)
+          Top-k int indices tensor, (num tokens) x (num_logprobs + 1)
+          Sampled token rank tensor, (num tokens)
+        """
+        # Compute logprobs.
         logprobs = logits.log_softmax(dim=-1, dtype=torch.float32)
-        # FIXME: Mask the sampled token_id, get topk logprobs,
-        # and concatenate the topk with the sampled token_id.
-        topk_logprobs, topk_indices = torch.topk(
-            logprobs, sampling_metadata.max_num_logprobs, dim=-1)
+        topk_logprobs, topk_indices = torch.topk(logprobs,
+                                                 num_logprobs,
+                                                 dim=-1)
         # Use int32 to reduce the tensor size.
         topk_indices = topk_indices.to(torch.int32)
-        return topk_logprobs, topk_indices
+
+        # Concatenate with the token_ids
+        token_ids = token_ids.unsqueeze(-1)
+        sampled_logprobs = logprobs.gather(-1, token_ids.to(torch.int64))
+        topk_indices = torch.cat((token_ids, topk_indices), dim=1)
+        topk_logprobs = torch.cat((sampled_logprobs, topk_logprobs), dim=1)
+
+        sampled_token_ranks = (logprobs >= sampled_logprobs).sum(-1)
+
+        return topk_logprobs, topk_indices, sampled_token_ranks
 
     def apply_penalties(
         self,

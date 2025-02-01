@@ -118,11 +118,11 @@ class Scheduler:
         # but not all. The constraint is due to the persistent batch in the
         # V1 model runner.
         # TODO(woosuk): Remove this constraint after refactoring model runner.
-        has_partial_request = False
+        partial_req_id: Optional[str] = None
         req_index = 0
         while req_index < len(self.running):
             # Only the last request in the RUNNING queue can be "partial".
-            assert not has_partial_request
+            assert not partial_req_id
             assert token_budget > 0
             request = self.running[req_index]
             num_new_tokens = request.num_tokens - request.num_computed_tokens
@@ -169,9 +169,11 @@ class Scheduler:
             ]
             num_scheduled_tokens[request.request_id] = num_new_tokens
             token_budget -= num_new_tokens
+            if (request.num_computed_tokens + num_new_tokens
+                    < request.num_tokens):
+                assert not partial_req_id
+                partial_req_id = request.request_id
             req_index += 1
-            has_partial_request = (request.num_computed_tokens + num_new_tokens
-                                   < request.num_tokens)
 
             # Encoder-related.
             if encoder_inputs_to_schedule:
@@ -185,7 +187,7 @@ class Scheduler:
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
             while self.waiting:
-                if has_partial_request:
+                if partial_req_id:
                     break
                 if len(self.running) == self.max_num_running_reqs:
                     break
@@ -247,8 +249,9 @@ class Scheduler:
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens
-                has_partial_request = (num_computed_tokens + num_new_tokens
-                                       < request.num_tokens)
+                if num_computed_tokens + num_new_tokens < request.num_tokens:
+                    assert not partial_req_id
+                    partial_req_id = request.request_id
 
                 # Encoder-related.
                 if encoder_inputs_to_schedule:
@@ -298,6 +301,7 @@ class Scheduler:
             scheduled_new_reqs=new_reqs_data,
             scheduled_resumed_reqs=resumed_reqs_data,
             scheduled_running_reqs=running_reqs_data,
+            partial_req_id=partial_req_id,
             num_scheduled_tokens=num_scheduled_tokens,
             total_num_scheduled_tokens=total_num_scheduled_tokens,
             scheduled_encoder_inputs=scheduled_encoder_inputs,
@@ -409,6 +413,10 @@ class Scheduler:
     ) -> EngineCoreOutputs:
         # NOTE(woosuk): This method doesn't consider speculative decoding.
         sampled_token_ids = model_runner_output.sampled_token_ids
+        logprobs_token_ids_cpu = model_runner_output.logprob_token_ids_cpu
+        logprobs_cpu = model_runner_output.logprobs_cpu
+        sampled_token_ranks_cpu = model_runner_output.sampled_token_ranks_cpu
+        prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
         new_running: List[Request] = []
         outputs: List[EngineCoreOutput] = []
@@ -437,6 +445,10 @@ class Scheduler:
                         self.encoder_cache_manager.free_encoder_input(
                             request, input_id)
 
+            # Extract prompt logprobs for this req if needed.
+            prompt_logprobs, prompt_logprobs_token_ids, prompt_token_ranks = (
+                prompt_logprobs_dict.get(req_id, (None, None, None)))
+
             if request.num_computed_tokens == request.num_tokens:
                 req_index = model_runner_output.req_id_to_index[req_id]
                 # NOTE(woosuk): Currently, we assume that each request
@@ -452,18 +464,52 @@ class Scheduler:
                 if stopped:
                     self._free_request(request)
 
+                # Extract sample logprobs if needed.
+                if request.sampling_params.logprobs is not None:
+                    assert logprobs_token_ids_cpu is not None
+                    assert logprobs_cpu is not None
+                    assert sampled_token_ranks_cpu is not None
+                    # Here we assume there is 1 generated token per step.
+                    # Once we support generating N tokens per step the
+                    # outer list should be length-N
+                    logprobs_token_ids = [logprobs_token_ids_cpu[req_index]]
+                    logprobs = [logprobs_cpu[req_index]]
+                    sampled_token_ranks = [sampled_token_ranks_cpu[req_index]]
+                else:
+                    (logprobs_token_ids, logprobs,
+                     sampled_token_ranks) = [], [], []
+
                 # Add EngineCoreOutput for this Request.
                 output = EngineCoreOutput(
                     request_id=req_id,
                     new_token_ids=request.output_token_ids[-num_new_tokens:],
-                    finished=request.is_finished(),
                     finish_reason=request.get_finished_reason(),
+                    new_logprobs_token_ids=logprobs_token_ids,
+                    new_logprobs=logprobs,
+                    new_sampled_token_ranks=sampled_token_ranks,
+                    new_prompt_logprobs_token_ids=prompt_logprobs_token_ids,
+                    new_prompt_logprobs=prompt_logprobs,
+                    new_prompt_token_ranks=prompt_token_ranks,
                     stop_reason=request.stop_reason)
                 outputs.append(output)
 
                 # Breakout of the loop.
                 if stopped:
                     continue
+
+            elif prompt_logprobs is not None:
+                # Chunked prefill & prompt logprobs is enabled; transmit partial
+                # logprobs via EngineCoreOutput
+                # Add EngineCoreOutput for this Request.
+                output = EngineCoreOutput(
+                    request_id=req_id,
+                    new_token_ids=[],
+                    finish_reason=request.get_finished_reason(),
+                    new_prompt_logprobs_token_ids=prompt_logprobs_token_ids,
+                    new_prompt_logprobs=prompt_logprobs,
+                    new_prompt_token_ranks=prompt_token_ranks,
+                    stop_reason=request.stop_reason)
+                outputs.append(output)
 
             new_running.append(request)
         self.running = new_running
@@ -629,6 +675,10 @@ class SchedulerOutput:
     scheduled_new_reqs: List[NewRequestData]
     scheduled_resumed_reqs: List[ResumedRequestData]
     scheduled_running_reqs: List[RunningRequestData]
+
+    # Remember the ID of the currently-scheduled
+    # partial request (`None` if none exists.)
+    partial_req_id: Optional[str]
 
     num_scheduled_tokens: Dict[str, int]
     total_num_scheduled_tokens: int
