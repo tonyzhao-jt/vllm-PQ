@@ -172,6 +172,13 @@ class PrometheusStatLogger(StatLoggerBase):
                 documentation="Histogram of e2e request latency in seconds.",
                 buckets=request_latency_buckets,
                 labelnames=labelnames).labels(*labelvalues)
+        self.histogram_queue_time_request = \
+            prometheus_client.Histogram(
+                name="vllm:request_queue_time_seconds",
+                documentation=
+                "Histogram of time spent in WAITING phase for request.",
+                buckets=request_latency_buckets,
+                labelnames=labelnames).labels(*labelvalues)
 
     def log(self, scheduler_stats: SchedulerStats,
             iteration_stats: IterationStats):
@@ -198,6 +205,8 @@ class PrometheusStatLogger(StatLoggerBase):
             self.histogram_time_to_first_token.observe(ttft)
         for tpot in iteration_stats.time_per_output_tokens_iter:
             self.histogram_time_per_output_token.observe(tpot)
+        for queue_time in iteration_stats.queue_times_iter:
+            self.histogram_queue_time_request.observe(queue_time)
 
     @staticmethod
     def _unregister_vllm_metrics():

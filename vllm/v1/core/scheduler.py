@@ -477,7 +477,7 @@ class Scheduler:
         self.running = new_running
         return EngineCoreOutputs(
             outputs=outputs,
-            scheduler_stats=self.make_stats(),
+            scheduler_stats=self.make_stats(scheduler_output),
         )
 
     def _check_stop(self, request: Request) -> bool:
@@ -548,11 +548,22 @@ class Scheduler:
     def reset_prefix_cache(self) -> bool:
         return self.kv_cache_manager.reset_prefix_cache()
 
-    def make_stats(self) -> SchedulerStats:
+    def make_stats(
+        self,
+        scheduler_output: Optional["SchedulerOutput"] = None
+    ) -> SchedulerStats:
+        if scheduler_output is not None and scheduler_output.scheduled_new_reqs:
+            new_req_ids = [
+                req_data.req_id
+                for req_data in scheduler_output.scheduled_new_reqs
+            ]
+        else:
+            new_req_ids = None
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
             gpu_cache_usage=self.kv_cache_manager.usage,
+            new_req_ids=new_req_ids,
         )
 
 

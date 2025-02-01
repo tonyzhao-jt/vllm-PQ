@@ -18,7 +18,6 @@ class OutputProcessorOutput:
 
     request_outputs: List[RequestOutput]
     reqs_to_abort: List[str]
-    iteration_stats: IterationStats
 
 
 class RequestState:
@@ -105,6 +104,15 @@ class OutputProcessor:
             request=request,
             queue=queue)
 
+    def record_first_scheduled_time(self, new_req_ids: List[str],
+                                    iteration_stats: IterationStats) -> None:
+        for req_id in new_req_ids:
+            req_state = self.request_states.get(req_id)
+            if req_state is None:
+                # Ignore output for already-aborted request.
+                continue
+            iteration_stats.update_from_newly_scheduled(req_state.stats)
+
     def process_outputs(
         self,
         engine_core_outputs: List[EngineCoreOutput],
@@ -141,8 +149,6 @@ class OutputProcessor:
 
         request_outputs: List[RequestOutput] = []
         reqs_to_abort: List[str] = []
-        if not iteration_stats:
-            iteration_stats = IterationStats(self.log_stats)
         for engine_core_output in engine_core_outputs:
             req_id = engine_core_output.request_id
             req_state = self.request_states.get(req_id)
@@ -151,10 +157,11 @@ class OutputProcessor:
                 continue
 
             # 1) Compute stats for this iteration.
-            iteration_stats.update_from_output(engine_core_output,
-                                               req_state.is_prefilling,
-                                               req_state.prompt_len,
-                                               req_state.stats)
+            if iteration_stats is not None:
+                iteration_stats.update_from_output(engine_core_output,
+                                                   req_state.is_prefilling,
+                                                   req_state.prompt_len,
+                                                   req_state.stats)
             req_state.is_prefilling = False
 
             # 2) Detokenize the token ids into text.
@@ -184,14 +191,14 @@ class OutputProcessor:
                         reqs_to_abort.append(req_id)
 
                     # Track per-request stats
-                    iteration_stats.update_from_finished_request(
-                        detokenizer_output.finish_reason, request_output,
-                        req_state.stats)
+                    if iteration_stats is not None:
+                        iteration_stats.update_from_finished_request(
+                            detokenizer_output.finish_reason, request_output,
+                            req_state.stats)
 
         return OutputProcessorOutput(
             request_outputs=request_outputs,
             reqs_to_abort=reqs_to_abort,
-            iteration_stats=iteration_stats,
         )
 
     @staticmethod

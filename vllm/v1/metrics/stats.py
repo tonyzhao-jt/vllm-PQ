@@ -2,7 +2,7 @@
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from vllm.outputs import RequestOutput
@@ -19,6 +19,8 @@ class SchedulerStats:
     gpu_cache_usage: float = 0.0
     # gpu_prefix_cache_hit_rate: float = 0.0
 
+    new_req_ids: Optional[List[str]] = None
+
 
 @dataclass
 class RequestStateStats:
@@ -26,6 +28,7 @@ class RequestStateStats:
 
     num_generation_tokens: int = 0
     arrival_time: float = 0.0
+    first_scheduled_time: float = 0.0
     last_token_time: float = 0.0
 
 
@@ -49,6 +52,7 @@ class IterationStats:
         self.finished_requests: List[FinishedRequestStats] = []
         self.time_to_first_tokens_iter: List[float] = []
         self.time_per_output_tokens_iter: List[float] = []
+        self.queue_times_iter: List[float] = []
 
     def update_from_output(self, output: "EngineCoreOutput",
                            is_prefilling: bool, prompt_len: int,
@@ -75,6 +79,13 @@ class IterationStats:
 
         request_state_stats.num_generation_tokens += num_new_generation_tokens
         request_state_stats.last_token_time = now
+
+    def update_from_newly_scheduled(self,
+                                    request_state_stats: RequestStateStats):
+        now = time.time()
+        request_state_stats.first_scheduled_time = now
+        queue_time = now - request_state_stats.arrival_time
+        self.queue_times_iter.append(queue_time)
 
     def update_from_finished_request(self, finish_reason: "FinishReason",
                                      request_output: "RequestOutput",
