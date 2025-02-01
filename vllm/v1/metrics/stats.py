@@ -29,6 +29,7 @@ class RequestStateStats:
     num_generation_tokens: int = 0
     arrival_time: float = 0.0
     first_scheduled_time: float = 0.0
+    first_token_time: float = 0.0
     last_token_time: float = 0.0
 
 
@@ -40,6 +41,8 @@ class FinishedRequestStats:
     e2e_latency: float = 0.0
     num_prompt_tokens: int = 0
     num_generation_tokens: int = 0
+    inference_time: float = 0.0
+    decode_time: float = 0.0
 
 
 class IterationStats:
@@ -53,6 +56,7 @@ class IterationStats:
         self.time_to_first_tokens_iter: List[float] = []
         self.time_per_output_tokens_iter: List[float] = []
         self.queue_times_iter: List[float] = []
+        self.prefill_times_iter: List[float] = []
 
     def update_from_output(self, output: "EngineCoreOutput",
                            is_prefilling: bool, prompt_len: int,
@@ -72,8 +76,12 @@ class IterationStats:
             # iff num_computed_tokens == num_tokens).
             assert (num_new_generation_tokens > 0)
             self.num_prompt_tokens += prompt_len
+            self.first_token_time = now
 
             self.time_to_first_tokens_iter.append(last_token_latency)
+
+            prefill_time = now - request_state_stats.first_scheduled_time
+            self.prefill_times_iter.append(prefill_time)
         else:
             self.time_per_output_tokens_iter.append(last_token_latency)
 
@@ -92,8 +100,14 @@ class IterationStats:
                                      request_state_stats: RequestStateStats):
         now = time.time()
         e2e_latency = now - request_state_stats.arrival_time
+        inference_time = now - request_state_stats.first_scheduled_time
+        decode_time = now - request_state_stats.first_token_time
 
-        self.finished_requests.append(
-            FinishedRequestStats(finish_reason, e2e_latency,
-                                 len(request_output.prompt_token_ids),
-                                 request_state_stats.num_generation_tokens))
+        finished_req = \
+            FinishedRequestStats(finish_reason=finish_reason,
+                                 e2e_latency=e2e_latency,
+                                 num_prompt_tokens=len(request_output.prompt_token_ids),
+                                 num_generation_tokens=request_state_stats.num_generation_tokens,
+                                 inference_time=inference_time,
+                                 decode_time=decode_time)
+        self.finished_requests.append(finished_req)

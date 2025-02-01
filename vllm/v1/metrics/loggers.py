@@ -179,6 +179,27 @@ class PrometheusStatLogger(StatLoggerBase):
                 "Histogram of time spent in WAITING phase for request.",
                 buckets=request_latency_buckets,
                 labelnames=labelnames).labels(*labelvalues)
+        self.histogram_inference_time_request = \
+            prometheus_client.Histogram(
+                name="vllm:request_inference_time_seconds",
+                documentation=
+                "Histogram of time spent in RUNNING phase for request.",
+                buckets=request_latency_buckets,
+                labelnames=labelnames).labels(*labelvalues)
+        self.histogram_prefill_time_request = \
+            prometheus_client.Histogram(
+                name="vllm:request_prefill_time_seconds",
+                documentation=
+                "Histogram of time spent in PREFILL phase for request.",
+                buckets=request_latency_buckets,
+                labelnames=labelnames).labels(*labelvalues)
+        self.histogram_decode_time_request = \
+            prometheus_client.Histogram(
+                name="vllm:request_decode_time_seconds",
+                documentation=
+                "Histogram of time spent in DECODE phase for request.",
+                buckets=request_latency_buckets,
+                labelnames=labelnames).labels(*labelvalues)
 
     def log(self, scheduler_stats: SchedulerStats,
             iteration_stats: IterationStats):
@@ -196,6 +217,10 @@ class PrometheusStatLogger(StatLoggerBase):
             self.counter_request_success[finished_request.finish_reason].inc()
             self.histogram_e2e_time_request.observe(
                 finished_request.e2e_latency)
+            self.histogram_inference_time_request.observe(
+                finished_request.inference_time)
+            self.histogram_decode_time_request.observe(
+                finished_request.decode_time)
             self.histogram_num_prompt_tokens_request.observe(
                 finished_request.num_prompt_tokens)
             self.histogram_num_generation_tokens_request.observe(
@@ -207,6 +232,8 @@ class PrometheusStatLogger(StatLoggerBase):
             self.histogram_time_per_output_token.observe(tpot)
         for queue_time in iteration_stats.queue_times_iter:
             self.histogram_queue_time_request.observe(queue_time)
+        for prefill_time in iteration_stats.prefill_times_iter:
+            self.histogram_prefill_time_request.observe(prefill_time)
 
     @staticmethod
     def _unregister_vllm_metrics():
