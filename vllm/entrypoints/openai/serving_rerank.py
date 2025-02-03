@@ -90,7 +90,7 @@ class JinaAIServingRerank(OpenAIServing):
                     f"is greater than max_model_len ({self.max_model_len})."
                     f" Please, select a smaller truncation size.")
             for doc in documents:
-                request_prompt = f"{query}{tokenizer.sep_token}{doc}"
+                request_prompt = f"{query}{tokenizer.sep_token_id}{doc}"
                 tokenization_kwargs: Dict[str, Any] = {}
                 if truncate_prompt_tokens is not None:
                     tokenization_kwargs["truncation"] = True
