@@ -211,11 +211,11 @@ class MistralTokenizer(TokenizerBase):
         return self.tokenizer.eos_id
 
     @property
-    def sep_token_id(self) -> int:
+    def sep_token(self) -> str:
         raise NotImplementedError()
 
     @property
-    def pad_token_id(self) -> int:
+    def pad_token(self) -> str:
         raise NotImplementedError()
 
     @property

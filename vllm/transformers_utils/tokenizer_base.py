@@ -37,12 +37,12 @@ class TokenizerBase(ABC):
 
     @property
     @abstractmethod
-    def sep_token_id(self) -> int:
+    def sep_token(self) -> str:
         raise NotImplementedError()
 
     @property
     @abstractmethod
-    def pad_token_id(self) -> int:
+    def pad_token(self) -> str:
         raise NotImplementedError()
 
     @property

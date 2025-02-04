@@ -274,7 +274,7 @@ def run_hf(
         model, torch_dtype=torch.float16, trust_remote_code=trust_remote_code)
     if llm.config.model_type == "llama":
         # To enable padding in the HF backend.
-        tokenizer.pad_token_id = tokenizer.eos_token_id
+        tokenizer.pad_token = tokenizer.eos_token
     llm = llm.cuda()
 
     pbar = tqdm(total=len(requests))
