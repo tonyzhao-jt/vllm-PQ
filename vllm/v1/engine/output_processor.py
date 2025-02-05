@@ -104,9 +104,9 @@ class OutputProcessor:
             request=request,
             queue=queue)
 
-    def record_first_scheduled_time(self, new_req_ids: List[str],
+    def record_first_scheduled_time(self, scheduled_new_reqs: List[str],
                                     iteration_stats: IterationStats) -> None:
-        for req_id in new_req_ids:
+        for req_id in scheduled_new_reqs:
             req_state = self.request_states.get(req_id)
             if req_state is None:
                 # Ignore output for already-aborted request.

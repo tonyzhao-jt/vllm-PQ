@@ -553,17 +553,17 @@ class Scheduler:
         scheduler_output: Optional["SchedulerOutput"] = None
     ) -> SchedulerStats:
         if scheduler_output is not None and scheduler_output.scheduled_new_reqs:
-            new_req_ids = [
+            scheduled_new_reqs = [
                 req_data.req_id
                 for req_data in scheduler_output.scheduled_new_reqs
             ]
         else:
-            new_req_ids = None
+            scheduled_new_reqs = None
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
             gpu_cache_usage=self.kv_cache_manager.usage,
-            new_req_ids=new_req_ids,
+            scheduled_new_reqs=scheduled_new_reqs,
         )
 
 

@@ -19,7 +19,7 @@ class SchedulerStats:
     gpu_cache_usage: float = 0.0
     # gpu_prefix_cache_hit_rate: float = 0.0
 
-    new_req_ids: Optional[List[str]] = None
+    scheduled_new_reqs: Optional[List[str]] = None
 
 
 @dataclass
