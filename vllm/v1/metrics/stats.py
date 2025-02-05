@@ -76,7 +76,7 @@ class IterationStats:
             # iff num_computed_tokens == num_tokens).
             assert (num_new_generation_tokens > 0)
             self.num_prompt_tokens += prompt_len
-            self.first_token_time = now
+            request_state_stats.first_token_time = now
 
             self.time_to_first_tokens_iter.append(last_token_latency)
 
