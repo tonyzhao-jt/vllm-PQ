@@ -19,7 +19,7 @@ from vllm.entrypoints.openai.protocol import (CompletionLogProbs,
                                               CompletionResponseChoice,
                                               CompletionResponseStreamChoice,
                                               CompletionStreamResponse,
-                                              ErrorResponse,
+                                              ErrorResponse, InBandMetrics,
                                               RequestResponseMetadata,
                                               UsageInfo)
 # yapf: enable
@@ -45,12 +45,15 @@ class OpenAIServingCompletion(OpenAIServing):
         *,
         request_logger: Optional[RequestLogger],
         return_tokens_as_token_ids: bool = False,
+        in_band_metrics: Optional[str] = None,
     ):
         super().__init__(engine_client=engine_client,
                          model_config=model_config,
                          models=models,
                          request_logger=request_logger,
-                         return_tokens_as_token_ids=return_tokens_as_token_ids)
+                         return_tokens_as_token_ids=return_tokens_as_token_ids,
+                         in_band_metrics=in_band_metrics)
+        # self.in_band_metrics = in_band_metrics
         diff_sampling_param = self.model_config.get_diff_sampling_param()
         if diff_sampling_param:
             logger.info(
@@ -393,6 +396,7 @@ class OpenAIServingCompletion(OpenAIServing):
         num_prompt_tokens = 0
         num_generated_tokens = 0
 
+        latest_in_band_metric : Tuple[int, InBandMetrics] = (0, InBandMetrics(format=self.in_band_metrics))
         for final_res in final_res_batch:
             prompt_token_ids = final_res.prompt_token_ids
             assert prompt_token_ids is not None
@@ -404,7 +408,15 @@ class OpenAIServingCompletion(OpenAIServing):
                             if logprob_values.logprob == float('-inf'):
                                 logprob_values.logprob = -9999.0
             prompt_text = final_res.prompt
-
+            logger.info(f"INBAND REQUEST METRICS {final_res.metrics}")
+            if final_res.metrics.cpu_kv_cache_utilization is not None or final_res.metrics.gpu_kv_cache_utilization is not None:
+                in_band_metric_timestamp, in_band_metric = final_res.metrics.last_token_time, InBandMetrics(
+                    cpu_kv_cache_utilisation=final_res.metrics.cpu_kv_cache_utilization, 
+                    gpu_kv_cache_utilisation=final_res.metrics.gpu_kv_cache_utilization,
+                    format = self.in_band_metrics)
+                if not latest_in_band_metric[1] or latest_in_band_metric[0]<in_band_metric_timestamp:
+                    latest_in_band_metric = (in_band_metric_timestamp, in_band_metric)    
+                
             token_ids: GenericSequence[int]
             out_logprobs: Optional[GenericSequence[Optional[Dict[int,
                                                                  Logprob]]]]
@@ -475,6 +487,7 @@ class OpenAIServingCompletion(OpenAIServing):
             model=model_name,
             choices=choices,
             usage=usage,
+            in_band_metrics=latest_in_band_metric[1] or InBandMetrics(),
         )
 
     def _create_completion_logprobs(
