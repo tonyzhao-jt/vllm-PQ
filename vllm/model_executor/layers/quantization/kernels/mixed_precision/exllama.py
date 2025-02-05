@@ -102,7 +102,7 @@ class ExllamaLinearKernel(MPLinearKernel):
             setattr(layer, self.w_gidx_name, empty_g_idx)
 
         def transform_w_q(x):
-            assert isinstance(x, BasevLLMParameter)
+            assert isinstance(x.vllm_parameter, BasevLLMParameter)
             assert self.w_gidx_name is not None
             g_idx = getattr(layer, self.w_gidx_name)
 
@@ -112,7 +112,7 @@ class ExllamaLinearKernel(MPLinearKernel):
             return x_cont
 
         def transform_w_s(x):
-            assert isinstance(x, BasevLLMParameter)
+            assert isinstance(x.vllm_parameter, BasevLLMParameter)
             permute_param_layout_(x, input_dim=0, output_dim=1)
             x.data = x.data.contiguous()
             return x.to(dtype=c.act_type)

@@ -94,20 +94,23 @@ class FBGEMMFp8LinearMethod(LinearMethodBase):
         layer.orig_dtype = params_dtype
 
         # WEIGHT
-        weight = ModelWeightParameter(data=torch.empty(
-            output_size_per_partition,
-            input_size_per_partition,
-            dtype=torch.float8_e4m3fn),
-                                      input_dim=1,
-                                      output_dim=0,
-                                      weight_loader=weight_loader)
+        weight = Parameter(data=torch.empty(output_size_per_partition,
+                                            input_size_per_partition,
+                                            dtype=torch.float8_e4m3fn),
+                           requires_grad=False)
+        weight.vllm_parameter = ModelWeightParameter(
+            data=weight,
+            input_dim=1,
+            output_dim=0,
+            weight_loader=weight_loader)
         layer.register_parameter("weight", weight)
 
         # WEIGHT SCALE
-        weight_scale = ChannelQuantScaleParameter(data=torch.empty(
+        weight_scale = Parameter(data=torch.empty(
             (sum(output_partition_sizes), 1), dtype=torch.float32),
-                                                  output_dim=0,
-                                                  weight_loader=weight_loader)
+                                 requires_grad=False)
+        weight_scale.vllm_parameter = ChannelQuantScaleParameter(
+            data=weight_scale, output_dim=0, weight_loader=weight_loader)
         weight_scale[:] = torch.finfo(torch.float32).min
         layer.register_parameter("weight_scale", weight_scale)
 
@@ -118,10 +121,7 @@ class FBGEMMFp8LinearMethod(LinearMethodBase):
         layer.input_scale_ub = input_scale_ub
 
     def process_weights_after_loading(self, layer: Module) -> None:
-        # required by torch.compile
-        layer.weight_scale = Parameter(layer.weight_scale.data,
-                                       requires_grad=False)
-        layer.weight = Parameter(layer.weight.data, requires_grad=False)
+        pass
 
         weight = layer.weight
 

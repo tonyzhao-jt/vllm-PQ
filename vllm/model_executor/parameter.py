@@ -13,31 +13,28 @@ from vllm.model_executor.utils import _make_synced_weight_loader
 __all__ = [
     "BasevLLMParameter", "PackedvLLMParameter", "PerTensorScaleParameter",
     "ModelWeightParameter", "ChannelQuantScaleParameter",
-    "GroupQuantScaleParameter", "PackedColumnParameter", "RowvLLMParameter"
+    "GroupQuantScaleParameter", "PackedColumnParameter", "RowvLLMParameter",
+    "BlockQuantScaleParameter"
 ]
 
 logger = init_logger(__name__)
 
 
-class BasevLLMParameter(Parameter):
+class BasevLLMParameter:
     """
     Base parameter for vLLM linear layers. Extends the torch.nn.parameter
     by taking in a linear weight loader. Will copy the loaded weight
     into the parameter when the provided weight loader is called.
     """
 
-    def __new__(cls, data: torch.Tensor, **kwargs):
-
-        return super().__new__(cls, data=data, requires_grad=False)
-
-    def __init__(self, data: torch.Tensor, weight_loader: Callable):
+    def __init__(self, data: Parameter, weight_loader: Callable, **kwargs):
         """
         Initialize the BasevLLMParameter
 
         :param data: torch tensor with the parameter data
         :param weight_loader: weight loader callable
 
-        :returns: a torch.nn.parameter
+        :returns: None
         """
 
         # During weight loading, we often do something like:
@@ -52,11 +49,16 @@ class BasevLLMParameter(Parameter):
         if current_platform.is_tpu():
             weight_loader = _make_synced_weight_loader(weight_loader)
 
-        self._weight_loader = weight_loader
+        self.data = data
+        self.data.weight_loader = weight_loader
+        self.data.load_column_parallel_weight = self.load_column_parallel_weight
+        self.data.load_row_parallel_weight = self.load_row_parallel_weight
+        self.data.load_merged_column_weight = self.load_merged_column_weight
+        self.data.load_qkv_weight = self.load_qkv_weight
 
     @property
     def weight_loader(self):
-        return self._weight_loader
+        return self.data.weight_loader
 
     def _is_1d_and_scalar(self, loaded_weight: torch.Tensor):
         cond1 = self.data.ndim == 1 and self.data.numel() == 1
@@ -93,12 +95,12 @@ class _ColumnvLLMParameter(BasevLLMParameter):
     """
 
     def __init__(self, output_dim: int, **kwargs):
-        self._output_dim = output_dim
         super().__init__(**kwargs)
+        self.data.output_dim = output_dim
 
     @property
     def output_dim(self):
-        return self._output_dim
+        return self.data.output_dim
 
     def load_column_parallel_weight(self, loaded_weight: torch.Tensor):
         tp_rank = get_tensor_model_parallel_rank()
@@ -164,12 +166,12 @@ class RowvLLMParameter(BasevLLMParameter):
     """
 
     def __init__(self, input_dim: int, **kwargs):
-        self._input_dim = input_dim
         super().__init__(**kwargs)
+        self.data.input_dim = input_dim
 
     @property
     def input_dim(self):
-        return self._input_dim
+        return self.data.input_dim
 
     def load_row_parallel_weight(self, loaded_weight: torch.Tensor):
         tp_rank = get_tensor_model_parallel_rank()
@@ -283,22 +285,22 @@ class PackedColumnParameter(_ColumnvLLMParameter):
                  packed_dim: int,
                  marlin_tile_size: Optional[int] = None,
                  **kwargs):
-        self._packed_factor = packed_factor
-        self._packed_dim = packed_dim
-        self._marlin_tile_size = marlin_tile_size
         super().__init__(**kwargs)
+        self.data.packed_dim = packed_dim
+        self.data.packed_factor = packed_factor
+        self.data.marlin_tile_size = marlin_tile_size
 
     @property
     def packed_dim(self):
-        return self._packed_dim
+        return self.data.packed_dim
 
     @property
     def packed_factor(self):
-        return self._packed_factor
+        return self.data.packed_factor
 
     @property
     def marlin_tile_size(self):
-        return self._marlin_tile_size
+        return self.data.marlin_tile_size
 
     def adjust_shard_indexes_for_packing(self, shard_size, shard_offset):
         return _adjust_shard_indexes_for_packing(
@@ -324,22 +326,22 @@ class PackedvLLMParameter(ModelWeightParameter):
                  packed_dim: int,
                  marlin_tile_size: Optional[int] = None,
                  **kwargs):
-        self._packed_factor = packed_factor
-        self._packed_dim = packed_dim
-        self._marlin_tile_size = marlin_tile_size
         super().__init__(**kwargs)
+        self.data.packed_dim = packed_dim
+        self.data.packed_factor = packed_factor
+        self.data.marlin_tile_size = marlin_tile_size
 
     @property
     def packed_dim(self):
-        return self._packed_dim
+        return self.data.packed_dim
 
     @property
     def packed_factor(self):
-        return self._packed_factor
+        return self.data.packed_factor
 
     @property
     def marlin_tile_size(self):
-        return self._marlin_tile_size
+        return self.data.marlin_tile_size
 
     def adjust_shard_indexes_for_packing(self, shard_size, shard_offset):
         return _adjust_shard_indexes_for_packing(
@@ -358,8 +360,8 @@ class BlockQuantScaleParameter(_ColumnvLLMParameter, RowvLLMParameter):
     pass
 
 
-def permute_param_layout_(param: BasevLLMParameter, input_dim: int,
-                          output_dim: int, **kwargs) -> BasevLLMParameter:
+def permute_param_layout_(param: Parameter, input_dim: int, output_dim: int,
+                          **kwargs) -> BasevLLMParameter:
     """
     Permute a parameter's layout to the specified input and output dimensions, 
     useful for forcing the parameter into a known layout, for example, if I need
@@ -406,12 +408,12 @@ def permute_param_layout_(param: BasevLLMParameter, input_dim: int,
             "permute_param_layout_ currently doesn't support repacking"
 
     param.data = param.data.permute(*perm)
-    if hasattr(param, "_input_dim"):
-        param._input_dim = input_dim
-    if hasattr(param, "_output_dim"):
-        param._output_dim = output_dim
-    if "packed_dim" in kwargs and hasattr(param, "_packed_dim"):
-        param._packed_dim = kwargs["packed_dim"]
+    if hasattr(param.vllm_parameter, "_input_dim"):
+        param.vllm_parameter._input_dim = input_dim
+    if hasattr(param.vllm_parameter, "_output_dim"):
+        param.vllm_parameter._output_dim = output_dim
+    if "packed_dim" in kwargs and hasattr(param.vllm_parameter, "_packed_dim"):
+        param.vllm_parameter._packed_dim = kwargs["packed_dim"]
 
     return param
 

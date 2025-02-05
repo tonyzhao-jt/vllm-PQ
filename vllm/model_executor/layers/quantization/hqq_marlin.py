@@ -3,6 +3,7 @@
 from typing import Any, Dict, List, Optional
 
 import torch
+from torch.nn import Parameter
 
 from vllm import _custom_ops as ops
 from vllm.logger import init_logger
@@ -128,8 +129,8 @@ class HQQweightParameter(PackedvLLMParameter):
                  **kwargs):
         super().__init__(packed_factor, packed_dim, None, **kwargs)
         self.weight_bits = weight_bits
-        self.input_shape = self.shape[self.input_dim] * self.packed_factor
-        self.output_shape = self.shape[self.output_dim]
+        self.input_shape = self.data.shape[self.input_dim] * self.packed_factor
+        self.output_shape = self.data.shape[self.output_dim]
 
     def load_merged_column_weight(self, loaded_weight: torch.Tensor, **kwargs):
         loaded_weight = self.unpack_4bit_u8(loaded_weight)
@@ -164,15 +165,15 @@ class HQQweightParameter(PackedvLLMParameter):
 class HQQZeroScaleParameter(GroupQuantScaleParameter):
 
     def load_merged_column_weight(self, loaded_weight: torch.Tensor, **kwargs):
-        loaded_weight = loaded_weight.reshape(-1, self.shape[1])
+        loaded_weight = loaded_weight.reshape(-1, self.data.shape[1])
         super().load_merged_column_weight(loaded_weight, **kwargs)
 
     def load_row_parallel_weight(self, loaded_weight: torch.Tensor):
-        loaded_weight = loaded_weight.reshape(self.shape[0], -1)
+        loaded_weight = loaded_weight.reshape(self.data.shape[0], -1)
         super().load_row_parallel_weight(loaded_weight)
 
     def load_qkv_weight(self, loaded_weight: torch.Tensor, **kwargs):
-        loaded_weight = loaded_weight.reshape(-1, self.shape[1])
+        loaded_weight = loaded_weight.reshape(-1, self.data.shape[1])
         super().load_qkv_weight(loaded_weight, **kwargs)
 
 
@@ -204,12 +205,14 @@ class HQQMarlinMethod(LinearMethodBase):
         self.scales_and_zp_size = (input_size_per_partition //
                                    self.quant_config.group_size)
 
-        qweight = HQQweightParameter(
-            data=torch.empty(
-                self.input_size_per_partition // self.quant_config.pack_factor,
-                self.output_size_per_partition,
-                dtype=torch.int32,
-            ),
+        qweight = Parameter(data=torch.empty(
+            self.input_size_per_partition // self.quant_config.pack_factor,
+            self.output_size_per_partition,
+            dtype=torch.int32,
+        ),
+                            requires_grad=False)
+        qweight.vllm_parameter = HQQweightParameter(
+            data=qweight,
             input_dim=0,
             output_dim=1,
             packed_dim=0,
@@ -217,23 +220,26 @@ class HQQMarlinMethod(LinearMethodBase):
             weight_bits=self.quant_config.weight_bits,
             weight_loader=weight_loader)
 
-        zeros = HQQZeroScaleParameter(data=torch.empty(
+        zeros = Parameter(data=torch.empty(
             self.output_size_per_partition,
             self.scales_and_zp_size,
             dtype=params_dtype,
         ),
-                                      input_dim=1,
-                                      output_dim=0,
-                                      weight_loader=weight_loader)
+                          requires_grad=False)
+        zeros.vllm_parameter = HQQZeroScaleParameter(
+            data=zeros, input_dim=1, output_dim=0, weight_loader=weight_loader)
 
-        scales = HQQZeroScaleParameter(data=torch.empty(
+        scales = Parameter(data=torch.empty(
             self.output_size_per_partition,
             self.scales_and_zp_size,
             dtype=params_dtype,
         ),
-                                       input_dim=1,
-                                       output_dim=0,
-                                       weight_loader=weight_loader)
+                           requires_grad=False)
+        scales.vllm_parameter = HQQZeroScaleParameter(
+            data=scales,
+            input_dim=1,
+            output_dim=0,
+            weight_loader=weight_loader)
 
         layer.register_parameter("W_q", qweight)
         layer.register_parameter("zero", zeros)
@@ -248,10 +254,10 @@ class HQQMarlinMethod(LinearMethodBase):
                              "shape", "stores_quant_config",
                              "unpack_view_dtype", "view_as_float")
         for name in ignore_parameters:
-            layer.register_parameter(
-                name,
-                HQQEmptyParameter(data=torch.empty(0),
-                                  weight_loader=weight_loader))
+            empty = Parameter(torch.empty(0), requires_grad=False)
+            empty.vllm_parameter = HQQEmptyParameter(
+                data=empty, weight_loader=weight_loader)
+            layer.register_parameter(name, empty)
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         dev = layer.W_q.device

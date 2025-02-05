@@ -6,6 +6,7 @@ import torch
 from compressed_tensors.quantization import (QuantizationArgs,
                                              QuantizationStrategy,
                                              QuantizationType)
+from torch.nn import Parameter
 
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
@@ -52,31 +53,35 @@ class CompressedTensors24(CompressedTensorsScheme):
         self.weights_dtype: torch.dtype = self._get_params_dtype(params_dtype)
 
         # parameter to store uncompressed weight
-        weight = ModelWeightParameter(data=torch.empty(
-            sum(output_partition_sizes),
-            input_size_per_partition,
-            dtype=self.weights_dtype),
-                                      input_dim=1,
-                                      output_dim=0,
-                                      weight_loader=weight_loader)
+        weight = Parameter(data=torch.empty(sum(output_partition_sizes),
+                                            input_size_per_partition,
+                                            dtype=self.weights_dtype),
+                           requires_grad=False)
+        weight.vllm_parameter = ModelWeightParameter(
+            data=weight,
+            input_dim=1,
+            output_dim=0,
+            weight_loader=weight_loader)
 
         # Check if quantized, not just 2:4 Sparse
         if self.quantized:
             if (self.weight_quant and self.weight_quant.strategy
                     == QuantizationStrategy.CHANNEL.value):
-                weight_scale = ChannelQuantScaleParameter(
-                    data=torch.empty((sum(output_partition_sizes), 1),
-                                     dtype=torch.float32),
+                weight_scale = Parameter(data=torch.empty(
+                    (sum(output_partition_sizes), 1), dtype=torch.float32),
+                                         requires_grad=False)
+                weight_scale.vllm_parameter = ChannelQuantScaleParameter(
+                    data=weight_scale,
                     output_dim=0,
                     weight_loader=weight_loader)
             else:
                 assert (self.weight_quant and self.weight_quant.strategy
                         == QuantizationStrategy.TENSOR.value)
-                weight_scale = PerTensorScaleParameter(
-                    data=torch.empty(len(output_partition_sizes),
-                                     dtype=torch.float32),
-                    weight_loader=weight_loader)
-
+                weight_scale = Parameter(data=torch.empty(
+                    len(output_partition_sizes), dtype=torch.float32),
+                                         requires_grad=False)
+                weight_scale.vllm_parameter = PerTensorScaleParameter(
+                    data=weight_scale, weight_loader=weight_loader)
             layer.register_parameter("weight_scale", weight_scale)
 
             # input quant will be non-none
@@ -84,9 +89,11 @@ class CompressedTensors24(CompressedTensorsScheme):
                 # register input quant scale
                 assert (self.input_quant.strategy ==
                         QuantizationStrategy.TENSOR.value)
-                input_scale = BasevLLMParameter(data=torch.empty(
-                    1, dtype=torch.float32),
-                                                weight_loader=weight_loader)
+                input_scale = Parameter(data=torch.empty(1,
+                                                         dtype=torch.float32),
+                                        requires_grad=False)
+                input_scale.vllm_parameter = BasevLLMParameter(
+                    data=input_scale, weight_loader=weight_loader)
 
                 layer.register_parameter("input_scale", input_scale)
 
@@ -114,21 +121,12 @@ class CompressedTensors24(CompressedTensorsScheme):
         :param layer: The layer with the weights to be processed
         
         """
-        # torch.compile workaround
-        if hasattr(layer, "input_scale"):
-            layer.input_scale = torch.nn.Parameter(layer.input_scale.data,
-                                                   requires_grad=False)
-
-        if self.weight_quant:
-            if self.weight_quant.strategy == QuantizationStrategy.TENSOR.value:
-                layer.weight_scale = torch.nn.Parameter(convert_to_channelwise(
-                    weight_scale=layer.weight_scale,
-                    logical_widths=layer.logical_widths),
-                                                        requires_grad=False)
-            else:
-                # torch.compile workaround
-                layer.weight_scale = torch.nn.Parameter(
-                    layer.weight_scale.data, requires_grad=False)
+        if (self.weight_quant and self.weight_quant.strategy
+                == QuantizationStrategy.TENSOR.value):
+            layer.weight_scale = torch.nn.Parameter(convert_to_channelwise(
+                weight_scale=layer.weight_scale,
+                logical_widths=layer.logical_widths),
+                                                    requires_grad=False)
 
         w_compressed, meta = ops.cutlass_sparse_compress(layer.weight.data)
         layer.weight = torch.nn.Parameter(w_compressed, requires_grad=False)

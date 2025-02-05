@@ -70,7 +70,7 @@ class MacheteLinearKernel(MPLinearKernel):
                 self.act_perm = partial(ops.permute_cols, perm=perm)
 
         def transform_w_q(x):
-            assert isinstance(x, BasevLLMParameter)
+            assert isinstance(x.vllm_parameter, BasevLLMParameter)
             permute_param_layout_(x, input_dim=0, output_dim=1, packed_dim=0)
             if c.has_g_idx:
                 x_unpacked = unpack_quantized_values_into_int32(x.data,
@@ -87,7 +87,7 @@ class MacheteLinearKernel(MPLinearKernel):
             return x
 
         def transform_w_s(x):
-            assert isinstance(x, BasevLLMParameter)
+            assert isinstance(x.vllm_parameter, BasevLLMParameter)
             permute_param_layout_(x, input_dim=0, output_dim=1)
             x.data = x.data.contiguous()
             return x

@@ -16,14 +16,7 @@ from vllm.distributed import (divide, get_tensor_model_parallel_rank,
 from vllm.logger import init_logger
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig, QuantizeMethodBase)
-# yapf: disable
-from vllm.model_executor.parameter import (BasevLLMParameter,
-                                           BlockQuantScaleParameter,
-                                           PackedColumnParameter,
-                                           PackedvLLMParameter,
-                                           PerTensorScaleParameter,
-                                           RowvLLMParameter)
-# yapf: enable
+from vllm.model_executor.parameter import *
 from vllm.model_executor.utils import set_weight_attrs
 
 logger = init_logger(__name__)
@@ -589,7 +582,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 
-    def _load_fused_module_from_checkpoint(self, param: BasevLLMParameter,
+    def _load_fused_module_from_checkpoint(self, param: Parameter,
                                            loaded_weight: torch.Tensor):
         """
         Handle special case for models where MLP layers are already
@@ -611,8 +604,9 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             # Special case for Quantization.
             # If quantized, we need to adjust the offset and size to account
             # for the packing.
-            if isinstance(param, (PackedColumnParameter, PackedvLLMParameter
-                                  )) and param.packed_dim == param.output_dim:
+            if isinstance(param.vllm_parameter,
+                          (PackedColumnParameter, PackedvLLMParameter
+                           )) and param.packed_dim == param.output_dim:
                 shard_size, shard_offset = \
                     param.adjust_shard_indexes_for_packing(
                     shard_size=shard_size, shard_offset=shard_offset)
@@ -623,15 +617,16 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
             self.weight_loader_v2(param, loaded_weight_shard, shard_id)
 
     def weight_loader_v2(self,
-                         param: BasevLLMParameter,
+                         param: Parameter,
                          loaded_weight: torch.Tensor,
                          loaded_shard_id: Optional[int] = None):
         if loaded_shard_id is None:
-            if isinstance(param, PerTensorScaleParameter):
+            if isinstance(param.vllm_parameter, PerTensorScaleParameter):
                 param.load_merged_column_weight(loaded_weight=loaded_weight,
                                                 shard_id=0)
                 return
-            elif type(param) in (RowvLLMParameter, BasevLLMParameter):
+            elif type(param.vllm_parameter) in (RowvLLMParameter,
+                                                BasevLLMParameter):
                 param.load_merged_column_weight(loaded_weight=loaded_weight)
                 return
             # TODO: @dsikka - move to parameter.py
@@ -642,7 +637,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
 
         tp_size = get_tensor_model_parallel_world_size()
 
-        if isinstance(param, BlockQuantScaleParameter):
+        if isinstance(param.vllm_parameter, BlockQuantScaleParameter):
             from vllm.model_executor.layers.quantization.fp8 import (
                 Fp8LinearMethod, Fp8MoEMethod)
             assert self.quant_method is not None
@@ -753,7 +748,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         }
         return shard_size_mapping.get(loaded_shard_id)
 
-    def _load_fused_module_from_checkpoint(self, param: BasevLLMParameter,
+    def _load_fused_module_from_checkpoint(self, param: Parameter,
                                            loaded_weight: torch.Tensor):
         """
         Handle special case for models where QKV layers are already 
@@ -778,8 +773,9 @@ class QKVParallelLinear(ColumnParallelLinear):
             # Special case for Quantization.
             # If quantized, we need to adjust the offset and size to account
             # for the packing.
-            if isinstance(param, (PackedColumnParameter, PackedvLLMParameter
-                                  )) and param.packed_dim == param.output_dim:
+            if isinstance(param.vllm_parameter,
+                          (PackedColumnParameter, PackedvLLMParameter
+                           )) and param.packed_dim == param.output_dim:
                 shard_size, shard_offset = \
                     param.adjust_shard_indexes_for_packing(
                     shard_size=shard_size, shard_offset=shard_offset)
@@ -790,14 +786,15 @@ class QKVParallelLinear(ColumnParallelLinear):
             self.weight_loader_v2(param, loaded_weight_shard, shard_id)
 
     def weight_loader_v2(self,
-                         param: BasevLLMParameter,
+                         param: Parameter,
                          loaded_weight: torch.Tensor,
                          loaded_shard_id: Optional[str] = None):
         if loaded_shard_id is None:  # special case for certain models
-            if isinstance(param, PerTensorScaleParameter):
+            if isinstance(param.vllm_parameter, PerTensorScaleParameter):
                 param.load_qkv_weight(loaded_weight=loaded_weight, shard_id=0)
                 return
-            elif type(param) in (RowvLLMParameter, BasevLLMParameter):
+            elif type(param.vllm_parameter) in (RowvLLMParameter,
+                                                BasevLLMParameter):
                 param.load_qkv_weight(loaded_weight=loaded_weight)
                 return
             # TODO: @dsikka - move to parameter.py
@@ -1113,9 +1110,7 @@ class RowParallelLinear(LinearBase):
         assert param_data.shape == loaded_weight.shape
         param_data.copy_(loaded_weight)
 
-    def weight_loader_v2(self, param: BasevLLMParameter,
-                         loaded_weight: torch.Tensor):
-
+    def weight_loader_v2(self, param: Parameter, loaded_weight: torch.Tensor):
         # Special case for loading scales off disk, which often do not
         # have a shape (such as in the case of AutoFP8).
         if len(loaded_weight.shape) == 0:
