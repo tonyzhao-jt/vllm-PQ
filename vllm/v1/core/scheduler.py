@@ -10,7 +10,7 @@ from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
                                                 compute_encoder_budget)
-from vllm.v1.core.kv_cache_manager import KVCacheManager
+from vllm.v1.core.paged_cache_manager import PagedCacheManager
 from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import ModelRunnerOutput
@@ -44,16 +44,11 @@ class Scheduler:
             self.scheduler_config.max_num_batched_tokens
         self.max_model_len = self.scheduler_config.max_model_len
 
+        self.block_size = self.cache_config.block_size
         num_gpu_blocks = cache_config.num_gpu_blocks
         assert isinstance(num_gpu_blocks, int) and num_gpu_blocks > 0
         # Create the KV cache manager.
-        self.kv_cache_manager = KVCacheManager(
-            block_size=self.cache_config.block_size,
-            num_gpu_blocks=num_gpu_blocks,
-            max_model_len=self.max_model_len,
-            sliding_window=self.cache_config.sliding_window,
-            enable_caching=self.cache_config.enable_prefix_caching)
-        self.block_size = self.cache_config.block_size
+        self.paged_cache_manager = PagedCacheManager()
 
         # req_id -> Request
         self.requests: Dict[str, Request] = {}
@@ -108,6 +103,7 @@ class Scheduler:
         preempted_reqs: List[Request] = []
 
         req_to_new_block_ids: Dict[str, List[int]] = {}
+        req_to_new_swa_block_ids: Dict[str, List[int]] = {}
         num_scheduled_tokens: Dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
         # Encoder-related.
@@ -138,13 +134,13 @@ class Scheduler:
                 continue
 
             while True:
-                new_blocks = self.kv_cache_manager.allocate_slots(
+                allocated_blocks = self.paged_cache_manager.allocate_slots(
                     request, num_new_tokens)
-                if new_blocks is None:
+                if allocated_blocks is None:
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
                     preempted_req = self.running.pop()
-                    self.kv_cache_manager.free(preempted_req)
+                    self.paged_cache_manager.free(preempted_req)
                     preempted_req.status = RequestStatus.PREEMPTED
                     preempted_req.num_computed_tokens = 0
 
@@ -160,12 +156,15 @@ class Scheduler:
                     break
             if not can_schedule:
                 break
-            assert new_blocks is not None
+            assert allocated_blocks is not None
 
             # Schedule the request.
             scheduled_running_reqs.append(request)
             req_to_new_block_ids[request.request_id] = [
-                b.block_id for b in new_blocks
+                b.block_id for b in allocated_blocks.new_blocks
+            ]
+            req_to_new_swa_block_ids[request.request_id] = [
+                b.block_id for b in allocated_blocks.new_swa_blocks
             ]
             num_scheduled_tokens[request.request_id] = num_new_tokens
             token_budget -= num_new_tokens
@@ -189,7 +188,7 @@ class Scheduler:
                 request = self.waiting[0]
                 # Get already-cached tokens.
                 computed_blocks, num_computed_tokens = \
-                    self.kv_cache_manager.get_computed_blocks(request)
+                    self.paged_cache_manager.get_computed_blocks(request)
                 # Number of tokens to be scheduled.
                 # We use `request.num_tokens` instead of
                 # `request.num_prompt_tokens` to consider the resumed requests,
@@ -218,9 +217,9 @@ class Scheduler:
                     # The request cannot be scheduled.
                     break
 
-                new_blocks = self.kv_cache_manager.allocate_slots(
+                allocated_blocks = self.paged_cache_manager.allocate_slots(
                     request, num_new_tokens, computed_blocks)
-                if new_blocks is None:
+                if allocated_blocks is None:
                     # The request cannot be scheduled.
                     break
 
@@ -235,7 +234,12 @@ class Scheduler:
                         f"Invalid request status: {request.status}")
 
                 req_to_new_block_ids[request.request_id] = [
-                    b.block_id for b in computed_blocks + new_blocks
+                    b.block_id for b in (computed_blocks.new_blocks +
+                                         allocated_blocks.new_blocks)
+                ]
+                req_to_new_swa_block_ids[request.request_id] = [
+                    b.block_id for b in (computed_blocks.new_swa_blocks +
+                                         allocated_blocks.new_swa_blocks)
                 ]
                 num_scheduled_tokens[request.request_id] = num_new_tokens
                 token_budget -= num_new_tokens
@@ -268,20 +272,23 @@ class Scheduler:
         if self.running:
             any_request = self.running[0]
             num_common_prefix_blocks = (
-                self.kv_cache_manager.get_num_common_prefix_blocks(
+                self.paged_cache_manager.get_num_common_prefix_blocks(
                     any_request, len(self.running)))
 
         # Construct the scheduler output.
         new_reqs_data = [
-            NewRequestData.from_request(req,
-                                        req_to_new_block_ids[req.request_id],
-                                        req.num_computed_tokens)
-            for req in scheduled_new_reqs
+            NewRequestData.from_request(
+                req,
+                req_to_new_block_ids[req.request_id],
+                req_to_new_swa_block_ids[req.request_id],
+                req.num_computed_tokens,
+            ) for req in scheduled_new_reqs
         ]
         resumed_reqs_data = [
             self._make_cached_request_data(
                 req,
                 req_to_new_block_ids[req.request_id],
+                req_to_new_swa_block_ids[req.request_id],
                 req.num_computed_tokens,
                 resumed_from_preemption=True,
             ) for req in scheduled_resumed_reqs
@@ -290,6 +297,7 @@ class Scheduler:
             self._make_cached_request_data(
                 req,
                 req_to_new_block_ids[req.request_id],
+                req_to_new_swa_block_ids[req.request_id],
                 req.num_computed_tokens,
                 resumed_from_preemption=False,
             ) for req in scheduled_running_reqs
@@ -316,6 +324,7 @@ class Scheduler:
         self,
         request: Request,
         new_block_ids: List[int],
+        new_swa_block_ids: List[int],
         num_computed_tokens: int,
         resumed_from_preemption: bool,
     ) -> "CachedRequestData":
@@ -325,11 +334,13 @@ class Scheduler:
             req_data = self._cached_reqs_data[request.request_id]
             req_data.resumed_from_preemption = resumed_from_preemption
             req_data.new_block_ids = new_block_ids
+            req_data.new_swa_block_ids = new_swa_block_ids
             req_data.num_computed_tokens = num_computed_tokens
         else:
             req_data = CachedRequestData.from_request(request,
                                                       resumed_from_preemption,
                                                       new_block_ids,
+                                                      new_swa_block_ids,
                                                       num_computed_tokens)
             self._cached_reqs_data[request.request_id] = req_data
         return req_data
@@ -533,7 +544,7 @@ class Scheduler:
 
     def _free_request(self, request: Request) -> None:
         assert request.is_finished()
-        self.kv_cache_manager.free(request)
+        self.paged_cache_manager.free(request)
         self.encoder_cache_manager.free(request)
         self._cached_reqs_data.pop(request.request_id, None)
         del self.requests[request.request_id]
@@ -546,13 +557,13 @@ class Scheduler:
         return self.get_num_unfinished_requests() > 0
 
     def reset_prefix_cache(self) -> bool:
-        return self.kv_cache_manager.reset_prefix_cache()
+        return self.paged_cache_manager.reset_prefix_cache()
 
     def make_stats(self) -> SchedulerStats:
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
-            gpu_cache_usage=self.kv_cache_manager.usage,
+            gpu_cache_usage=self.paged_cache_manager.usage,
         )
 
 
@@ -567,6 +578,7 @@ class NewRequestData:
     mm_positions: List["PlaceholderRange"]
     sampling_params: SamplingParams
     block_ids: List[int]
+    swa_block_ids: List[int]
     num_computed_tokens: int
 
     @classmethod
@@ -574,6 +586,7 @@ class NewRequestData:
         cls,
         request: Request,
         block_ids: List[int],
+        swa_block_ids: List[int],
         num_computed_tokens: int,
     ) -> "NewRequestData":
         return cls(
@@ -585,6 +598,7 @@ class NewRequestData:
             mm_positions=request.mm_positions,
             sampling_params=request.sampling_params,
             block_ids=block_ids,
+            swa_block_ids=swa_block_ids,
             num_computed_tokens=num_computed_tokens,
         )
 
@@ -598,6 +612,7 @@ class CachedRequestData:
     # request's block IDs instead of appending to the existing block IDs.
     resumed_from_preemption: bool
     new_block_ids: List[int]
+    new_swa_block_ids: List[int]
     num_computed_tokens: int
 
     @classmethod
@@ -606,12 +621,14 @@ class CachedRequestData:
         request: Request,
         resumed_from_preemption: bool,
         new_block_ids: List[int],
+        new_swa_block_ids: List[int],
         num_computed_tokens: int,
     ) -> "CachedRequestData":
         return cls(
             req_id=request.request_id,
             resumed_from_preemption=resumed_from_preemption,
             new_block_ids=new_block_ids,
+            new_swa_block_ids=new_swa_block_ids,
             num_computed_tokens=num_computed_tokens,
         )
 
