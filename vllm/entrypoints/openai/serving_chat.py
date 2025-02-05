@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from typing import (AsyncGenerator, AsyncIterator, Callable, Dict, Final, List,
+from typing import (Tuple, AsyncGenerator, AsyncIterator, Callable, Dict, Final, List,
                     Optional)
 from typing import Sequence as GenericSequence
 from typing import Union
@@ -20,7 +20,7 @@ from vllm.entrypoints.openai.protocol import (
     ChatCompletionResponseChoice, ChatCompletionResponseStreamChoice,
     ChatCompletionStreamResponse, ChatMessage, DeltaFunctionCall, DeltaMessage,
     DeltaToolCall, ErrorResponse, FunctionCall, PromptTokenUsageInfo,
-    RequestResponseMetadata, ToolCall, UsageInfo)
+    RequestResponseMetadata, ToolCall, UsageInfo, InBandMetrics)
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
 from vllm.entrypoints.openai.serving_models import OpenAIServingModels
 from vllm.entrypoints.openai.tool_parsers import ToolParser, ToolParserManager
@@ -50,12 +50,14 @@ class OpenAIServingChat(OpenAIServing):
         enable_auto_tools: bool = False,
         tool_parser: Optional[str] = None,
         enable_prompt_tokens_details: bool = False,
+        in_band_metrics: Optional[str]=None,
     ) -> None:
         super().__init__(engine_client=engine_client,
                          model_config=model_config,
                          models=models,
                          request_logger=request_logger,
-                         return_tokens_as_token_ids=return_tokens_as_token_ids)
+                         return_tokens_as_token_ids=return_tokens_as_token_ids,
+                         in_band_metrics=in_band_metrics)
 
         self.response_role = response_role
         self.chat_template = chat_template
@@ -623,6 +625,9 @@ class OpenAIServingChat(OpenAIServing):
             return self.create_error_response(str(e))
 
         assert final_res is not None
+        
+        req_inband_metrics = InBandMetrics(cpu_kv_cache_utilisation=final_res.metrics.cpu_kv_cache_utilization,
+                                           gpu_kv_cache_utilisation=final_res.metrics.gpu_kv_cache_utilization)
 
         choices: List[ChatCompletionResponseChoice] = []
 
@@ -748,13 +753,14 @@ class OpenAIServingChat(OpenAIServing):
                 cached_tokens=final_res.num_cached_tokens)
 
         request_metadata.final_usage_info = usage
-
+        
         response = ChatCompletionResponse(
             id=request_id,
             created=created_time,
             model=model_name,
             choices=choices,
             usage=usage,
+            in_band_metrics= req_inband_metrics,
             prompt_logprobs=final_res.prompt_logprobs,
         )
 

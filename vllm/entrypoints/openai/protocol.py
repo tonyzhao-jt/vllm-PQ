@@ -112,6 +112,10 @@ class ModelList(OpenAIBaseModel):
 class PromptTokenUsageInfo(OpenAIBaseModel):
     cached_tokens: Optional[int] = None
 
+class InBandMetrics(OpenAIBaseModel):
+    cpu_kv_cache_utilisation: float = 0.0
+    gpu_kv_cache_utilisation: float = 0.0
+    format: Optional[str] = None
 
 class UsageInfo(OpenAIBaseModel):
     prompt_tokens: int = 0
@@ -1094,6 +1098,7 @@ class CompletionResponse(OpenAIBaseModel):
     model: str
     choices: List[CompletionResponseChoice]
     usage: UsageInfo
+    in_band_metrics: InBandMetrics
 
 
 class CompletionResponseStreamChoice(OpenAIBaseModel):
@@ -1237,6 +1242,7 @@ class ChatCompletionResponse(OpenAIBaseModel):
     model: str
     choices: List[ChatCompletionResponseChoice]
     usage: UsageInfo
+    in_band_metrics: InBandMetrics
     prompt_logprobs: Optional[List[Optional[Dict[int, Logprob]]]] = None
 
 

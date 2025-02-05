@@ -76,6 +76,7 @@ class OpenAIServing:
         *,
         request_logger: Optional[RequestLogger],
         return_tokens_as_token_ids: bool = False,
+        in_band_metrics: Optional[str] = None,
     ):
         super().__init__()
 
@@ -95,6 +96,8 @@ class OpenAIServing:
         self._tokenize_prompt_input_or_inputs_async = make_async(
             self._tokenize_prompt_input_or_inputs,
             executor=self._tokenizer_executor)
+        
+        self.in_band_metrics = in_band_metrics
 
     def create_error_response(
             self,

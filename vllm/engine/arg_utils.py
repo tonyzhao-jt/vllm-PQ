@@ -198,6 +198,7 @@ class EngineArgs:
     enable_sleep_mode: bool = False
 
     calculate_kv_scales: Optional[bool] = None
+    enable_inband_metrics: Optional[str] = None
 
     def __post_init__(self):
         if not self.tokenizer:
