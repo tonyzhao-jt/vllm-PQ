@@ -14,7 +14,7 @@ from vllm.attention.backends.abstract import (AttentionBackend, AttentionImpl,
                                               AttentionMetadataBuilder,
                                               AttentionType)
 from vllm.attention.backends.utils import (
-    FLASH_ATTN_VERSION, PAD_SLOT_ID, CommonAttentionState,
+    PAD_SLOT_ID, VLLM_FLASH_ATTN_VERSION, CommonAttentionState,
     compute_slot_mapping, compute_slot_mapping_start_idx,
     get_num_prefill_decode_query_kv_tokens, get_seq_len_block_table_args,
     is_all_cross_attn_metadata_set, is_all_encoder_attn_metadata_set,
@@ -759,7 +759,7 @@ class FlashAttentionImpl(AttentionImpl):
                     alibi_slopes=alibi_slopes,
                     softcap=logits_soft_cap,
                     out=prefill_output,
-                    fa_version=FLASH_ATTN_VERSION,
+                    fa_version=VLLM_FLASH_ATTN_VERSION,
                 )
             else:
                 # prefix-enabled attention
@@ -782,7 +782,7 @@ class FlashAttentionImpl(AttentionImpl):
                     block_table=prefill_meta.block_tables,
                     softcap=logits_soft_cap,
                     out=prefill_output,
-                    fa_version=FLASH_ATTN_VERSION,
+                    fa_version=VLLM_FLASH_ATTN_VERSION,
                 )
 
         if decode_meta := attn_metadata.decode_metadata:
@@ -811,7 +811,7 @@ class FlashAttentionImpl(AttentionImpl):
                     softcap=logits_soft_cap,
                     block_table=decode_meta.block_tables,
                     out=decode_output,
-                    fa_version=FLASH_ATTN_VERSION,
+                    fa_version=VLLM_FLASH_ATTN_VERSION,
                 )
             else:
                 # Use flash_attn_with_kvcache for normal decoding.
@@ -832,7 +832,7 @@ class FlashAttentionImpl(AttentionImpl):
                     alibi_slopes=alibi_slopes,
                     softcap=logits_soft_cap,
                     out=decode_output.unsqueeze(1),
-                    fa_version=FLASH_ATTN_VERSION,
+                    fa_version=VLLM_FLASH_ATTN_VERSION,
                 )
         return output
 

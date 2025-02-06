@@ -610,4 +610,4 @@ def flash_attn_version():
     return fa_version
 
 
-FLASH_ATTN_VERSION = flash_attn_version()
+VLLM_FLASH_ATTN_VERSION = flash_attn_version()
