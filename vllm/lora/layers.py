@@ -16,8 +16,7 @@ from vllm.distributed import (get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size,
                               split_tensor_along_last_dim,
                               tensor_model_parallel_all_gather,
-                              tensor_model_parallel_all_reduce,
-                              tensor_model_parallel_gather)
+                              tensor_model_parallel_all_reduce)
 from vllm.distributed.utils import divide
 # yapf: disable
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
@@ -238,16 +237,22 @@ class VocabParallelEmbeddingWithLoRA(BaseLayerWithLoRA):
                 self.embeddings_weights[:embeddings.shape[0]].copy_(embeddings)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        added_tokens_mask = x > self.base_layer.org_vocab_size - 1
-        embeddings_indices = self.punica_wrapper.embeddings_indices
+
+        added_tokens_mask = torch.where(x > self.base_layer.org_vocab_size - 1,
+                                        1, 0)
+        embeddings_indices = torch.narrow(
+            self.punica_wrapper._embeddings_indices, 1, 0, x.size(0))
+
         indices = embeddings_indices[1].view_as(x)
         full_lora_a_embeddings = F.embedding(
             x + indices,
             self.lora_a_stacked_2d,
         )
         indices = embeddings_indices[0].view_as(x)
-        full_output = self.base_layer.forward(
-            x.add_(indices * added_tokens_mask))
+        #full_output = self.base_layer.forward(
+        #    x.add_(indices * added_tokens_mask))
+        full_output = self.base_layer.forward( 
+            x + (indices * added_tokens_mask))
 
         full_output_org = full_output
         if full_output.ndim == 3:
@@ -1043,7 +1048,10 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         logits = lm_head.linear_method.apply(lm_head, hidden_states)
         if embedding_bias is not None:
             logits += embedding_bias
-        logits = tensor_model_parallel_gather(logits)
+
+        # Gather logits for TP
+        logits = self.base_layer._gather_logits(logits)
+
         if logits is None:
             return None
 
