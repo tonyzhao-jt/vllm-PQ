@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import (TYPE_CHECKING, Deque, Dict, Iterable, List, Optional, Set,
                     Tuple, Union)
 
-from vllm.config import CacheConfig, LoRAConfig, ModelConfig, SchedulerConfig
+from vllm.config import (CacheConfig, LoRAConfig, ModelConfig, SchedulerConfig,
+                         SpeculativeConfig)
 from vllm.logger import init_logger
 from vllm.sampling_params import SamplingParams
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
@@ -15,6 +16,7 @@ from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
+from vllm.v1.utils import ConstantList
 
 if TYPE_CHECKING:
     from vllm.multimodal import MultiModalKwargs
@@ -31,10 +33,12 @@ class Scheduler:
         model_config: ModelConfig,
         cache_config: CacheConfig,
         lora_config: Optional[LoRAConfig],
+        speculative_config: Optional[SpeculativeConfig] = None,
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
         self.lora_config = lora_config
+        self.speculative_config = speculative_config
         # TODO: Support LoRA.
         assert lora_config is None, "V1 does not support LoRA yet."
 
@@ -95,8 +99,9 @@ class Scheduler:
     def schedule(self) -> "SchedulerOutput":
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
-        # Each request just has the num_computed_tokens and num_tokens,
-        # which is equal to len(prompt_token_ids) + len(output_token_ids).
+        # Each request just has the num_computed_tokens and num_tokens.
+        # num_tokens  = len(prompt_token_ids) + len(output_token_ids) +
+        # len(spec_token_ids).
         # At each step, the scheduler tries to assign tokens to the requests
         # so that each request's num_computed_tokens can catch up its
         # num_tokens. This is general enough to cover chunked prefills,
@@ -114,11 +119,18 @@ class Scheduler:
         scheduled_encoder_inputs: Dict[str, List[int]] = {}
         encoder_budget = self.max_num_encoder_input_tokens
 
+        # Spec Decode-related.
+        spec_decode = False
+        scheduled_spec_decode_tokens: Dict[str, ConstantList[int]] = {}
+
         # First, schedule the RUNNING requests.
         req_index = 0
+        spec_lens = [len(req.spec_token_ids) for req in self.running]
+        max_speculative_tokens = max(spec_lens) if spec_lens else 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
-            num_new_tokens = request.num_tokens - request.num_computed_tokens
+            num_new_tokens = request.num_tokens_with_spec  \
+                                - request.num_computed_tokens
             num_new_tokens = min(num_new_tokens, token_budget)
             assert num_new_tokens > 0
 
@@ -139,7 +151,9 @@ class Scheduler:
 
             while True:
                 new_blocks = self.kv_cache_manager.allocate_slots(
-                    request, num_new_tokens)
+                    request,
+                    num_new_tokens,
+                    max_speculative_tokens=max_speculative_tokens)
                 if new_blocks is None:
                     # The request cannot be scheduled.
                     # Preempt the lowest-priority request.
@@ -179,6 +193,12 @@ class Scheduler:
                 for i in encoder_inputs_to_schedule:
                     self.encoder_cache_manager.allocate(request, i)
                 encoder_budget = new_encoder_budget
+
+            # Speculative decode related.
+            if request.spec_token_ids:
+                spec_decode = True
+            scheduled_spec_decode_tokens[
+                request.request_id] = request.spec_token_ids
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
@@ -300,6 +320,8 @@ class Scheduler:
             num_scheduled_tokens=num_scheduled_tokens,
             total_num_scheduled_tokens=total_num_scheduled_tokens,
             scheduled_encoder_inputs=scheduled_encoder_inputs,
+            use_spec_decode=spec_decode,
+            scheduled_spec_decode_tokens=scheduled_spec_decode_tokens,
             num_common_prefix_blocks=num_common_prefix_blocks,
             # finished_req_ids is an existing state in the scheduler,
             # instead of being newly scheduled in this step.
@@ -412,6 +434,7 @@ class Scheduler:
         # NOTE(woosuk): This method doesn't consider speculative decoding.
         sampled_token_ids = model_runner_output.sampled_token_ids
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
+
         new_running: List[Request] = []
         outputs: List[EngineCoreOutput] = []
 
@@ -426,7 +449,24 @@ class Scheduler:
                 new_running.append(request)
                 continue
 
-            request.num_computed_tokens += num_tokens_scheduled
+            req_index = model_runner_output.req_id_to_index[req_id]
+            token_ids = sampled_token_ids[req_index]
+            # num_computed_tokens_step is the number of tokens computed
+            # in the current step.
+            # num_computed_tokens_step =
+            #   num_scheduled_tokens - num_tokens_rejected,
+            # where num_tokens_rejected =
+            #   len(request.spec_token_ids) + 1 - len(token_ids).
+            # We use this way of calculating num_computed_tokens_step because of
+            # chunked prefill. In chunked prefill, number of computed tokens
+            # is not equal to the number of generated/sampled tokens.
+            # Here, len(request.spec_token_ids) + 1 is the maximum number of
+            # tokens generated  in the current step,
+            # len(request.spec_token_ids) + 1 - len(token_ids) is the number of
+            # tokens rejected in the current step.
+            num_computed_tokens_step = num_scheduled_tokens[req_id] - (
+                len(request.spec_token_ids) + 1 - len(token_ids))
+            request.num_computed_tokens += num_computed_tokens_step
             # When the request's num_computed_tokens catches up its num_tokens,
             # the request generates output tokens. Otherwise, we ignore the
             # sampler output for the request.
@@ -445,18 +485,16 @@ class Scheduler:
                         self.encoder_cache_manager.free_encoder_input(
                             request, input_id)
 
-            if request.num_computed_tokens == request.num_tokens:
-                req_index = model_runner_output.req_id_to_index[req_id]
-                # NOTE(woosuk): Currently, we assume that each request
-                # generates at most one token at each step.
-                token_id = sampled_token_ids[req_index]
-                request.append_output_token_ids(token_id)
-                num_new_tokens = 1
+            if request.num_computed_tokens >= request.num_tokens:
+                request.clear_spec_tokens()
+                num_tokens_before_step = request.num_tokens
+                request.append_output_token_ids(token_ids)
                 # TODO: Update the KV cache manager for prefix caching.
 
                 # Check for stop and update request state.
                 # This must be called before we make the EngineCoreOutput.
-                stopped = self._check_stop(request)
+                stopped = self._maybe_stop_and_crop(request)
+                num_new_tokens = request.num_tokens - num_tokens_before_step
                 if stopped:
                     self._free_request(request)
 
@@ -480,23 +518,47 @@ class Scheduler:
             scheduler_stats=self.make_stats(),
         )
 
-    def _check_stop(self, request: Request) -> bool:
+    def _maybe_stop_and_crop(self, request: Request) -> bool:
+        """Check if the request should be stopped.
+        The function should handle both single token generation or
+        multiple token generation (e.g., spec decode) per step.
+        
+        This function will crop requests because the request is stopped
+        in the middle of the generation.
+        When cropping, we do not need to update the input batch because
+        it will be updated in the next execute_model call's
+        _update_states method, where the request data is aligned
+        with the data in the persistent batch.
+        """
         if (request.num_tokens >= self.max_model_len
                 or request.num_output_tokens >= request.max_tokens):
             request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+            num_total_token = min(
+                self.max_model_len, request.num_tokens,
+                request.max_tokens + request.num_prompt_tokens,
+                request.num_output_tokens + request.num_prompt_tokens)
+            request.crop(num_total_token)
             return True
 
         sampling_params = request.sampling_params
-        last_token_id = request.output_token_ids[-1]
-        if (not sampling_params.ignore_eos
-                and last_token_id == request.eos_token_id):
-            request.status = RequestStatus.FINISHED_STOPPED
-            return True
+        if not sampling_params.ignore_eos:
+            assert request.eos_token_id is not None
+            if request.eos_token_id in request.output_token_ids:
+                request.status = RequestStatus.FINISHED_STOPPED
+                num_total_token = request.num_prompt_tokens + \
+                        request.output_token_ids.index(request.eos_token_id) + 1
+                request.crop(num_total_token)
+                return True
 
-        if last_token_id in (sampling_params.stop_token_ids or ()):
-            request.status = RequestStatus.FINISHED_STOPPED
-            request.stop_reason = last_token_id
-            return True
+        output_token_ids = set(request.output_token_ids)
+        for stop_token_id in sampling_params.stop_token_ids:
+            if stop_token_id in output_token_ids:
+                request.status = RequestStatus.FINISHED_STOPPED
+                request.stop_reason = stop_token_id
+                num_total_token = request.num_prompt_tokens + \
+                        request.output_token_ids.index(stop_token_id) + 1
+                request.crop(num_total_token)
+                return True
         return False
 
     def add_request(self, request: Request) -> None:
@@ -625,6 +687,8 @@ class SchedulerOutput:
     num_scheduled_tokens: Dict[str, int]
     total_num_scheduled_tokens: int
     scheduled_encoder_inputs: Dict[str, List[int]]
+    use_spec_decode: bool
+    scheduled_spec_decode_tokens: Dict[str, ConstantList[int]]
     num_common_prefix_blocks: int
 
     finished_req_ids: Set[str]

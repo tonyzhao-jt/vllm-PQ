@@ -11,6 +11,7 @@ import torch
 from vllm.multimodal import MultiModalKwargs
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.v1.sample.metadata import SamplingMetadata
+from vllm.v1.utils import ConstantList
 from vllm.v1.worker.block_table import BlockTable
 
 if TYPE_CHECKING:
@@ -324,6 +325,8 @@ class InputBatch:
     def make_sampling_metadata(
         self,
         req_id_output_token_ids: Dict[str, List[int]],
+        req_id_to_spec_token_ids: Optional[Dict[str,
+                                                ConstantList[int]]] = None,
         skip_copy: bool = False,
     ) -> SamplingMetadata:
         if not skip_copy:
@@ -352,7 +355,9 @@ class InputBatch:
                 self.prompt_token_ids = self._make_prompt_token_ids_tensor()
 
         output_token_ids: List[List[int]] = []
-
+        spec_token_ids: List[ConstantList[int]] = []
+        rejection_sampling = False
+        req_id_to_spec_token_ids = req_id_to_spec_token_ids or {}
         for req_id in self.req_ids[:self.num_reqs]:
             assert req_id is not None
             # Currently we create a tensor for output_token_ids from scratch
@@ -363,11 +368,18 @@ class InputBatch:
             # TODO - Replace this with incremental update to output token
             # statistics.
             output_token_ids.append(req_id_output_token_ids[req_id])
+            req_spec_token_ids = req_id_to_spec_token_ids.get(req_id, None)
+            if req_spec_token_ids is not None and len(req_spec_token_ids) > 0:
+                spec_token_ids.append(req_spec_token_ids)
+                # If any of the requests require speculative decoding, set the
+                # flag to True.
+                rejection_sampling = True
 
         return SamplingMetadata(
             temperature=self.temperature[:self.num_reqs],
             all_greedy=self.all_greedy,
             all_random=self.all_random,
+            rejection_sampling=rejection_sampling,
             top_p=self.top_p[:self.num_reqs],
             top_k=self.top_k[:self.num_reqs],
             no_top_p=self.no_top_p,
@@ -379,6 +391,7 @@ class InputBatch:
             presence_penalties=self.presence_penalties[:self.num_reqs],
             repetition_penalties=self.repetition_penalties[:self.num_reqs],
             output_token_ids=output_token_ids,
+            spec_token_ids=spec_token_ids,
             min_tokens=self.min_tokens[:self.num_reqs],
             stop_token_ids=self.stop_token_ids[:self.num_reqs],
             no_penalties=self.no_penalties,

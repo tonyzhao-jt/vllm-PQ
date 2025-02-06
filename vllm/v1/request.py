@@ -51,6 +51,7 @@ class Request:
         self.num_prompt_tokens = len(self.prompt_token_ids)
         self._output_token_ids: List[int] = []
         self._all_token_ids: List[int] = self.prompt_token_ids.copy()
+        self._spec_token_ids: List[int] = []
         self.num_computed_tokens = 0
 
         # Multi-modal related
@@ -98,9 +99,28 @@ class Request:
         self._output_token_ids.extend(token_ids)
         self._all_token_ids.extend(token_ids)
 
+    def append_spec_token_ids(
+        self,
+        token_ids: Union[int, List[int]],
+    ) -> None:
+        if isinstance(token_ids, int):
+            token_ids = [token_ids]
+        self._spec_token_ids.extend(token_ids)
+
+    def clear_spec_tokens(self) -> None:
+        self._spec_token_ids = []
+
+    @property
+    def spec_token_ids(self) -> ConstantList[int]:
+        return ConstantList(self._spec_token_ids)
+
     @property
     def num_tokens(self) -> int:
         return len(self._all_token_ids)
+
+    @property
+    def num_tokens_with_spec(self) -> int:
+        return len(self._all_token_ids) + len(self._spec_token_ids)
 
     @property
     def num_output_tokens(self) -> int:
@@ -130,6 +150,26 @@ class Request:
 
     def append_kv_block_hashes(self, block_hash: "BlockHashType") -> None:
         self._kv_block_hashes.append(block_hash)
+
+    def crop(self, num_total_token: int) -> None:
+        """Crops the token sequences to a specified total length while 
+           preserving prompt tokens.
+
+        Args:
+            num_total_token: The desired total number of tokens after cropping.
+            
+        Raises:
+            ValueError: If num_total_token is less than the number of prompt 
+              tokens, as prompt tokens cannot be cropped.
+        """
+
+        if num_total_token < self.num_prompt_tokens:
+            raise ValueError("Cannot crop the prompt tokens.")
+        num_output_token = num_total_token - self.num_prompt_tokens
+        self._output_token_ids = self._output_token_ids[:num_output_token]
+        self._all_token_ids = self._all_token_ids[:num_total_token]
+        self.output_token_ids = ConstantList(self._output_token_ids)
+        self.all_token_ids = ConstantList(self._all_token_ids)
 
 
 class RequestStatus(enum.IntEnum):

@@ -10,6 +10,7 @@ from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.sample.ops.penalties import (apply_all_penalties,
                                           apply_min_token_penalties)
 from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
+from vllm.v1.sample.rejection_sampler import RejectionSampler
 
 _SAMPLING_EPS = 1e-5
 
@@ -19,12 +20,23 @@ class Sampler(nn.Module):
     def __init__(self):
         super().__init__()
         self.topk_topp_sampler = TopKTopPSampler()
+        self.rejection_sampler = RejectionSampler()
 
     def forward(
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
     ) -> SamplerOutput:
+        if sampling_metadata.rejection_sampling:
+            needs_logprobs = sampling_metadata.max_num_logprobs > 0
+            if needs_logprobs:
+                raise NotImplementedError(
+                    "Rejection sampling does not support logprobs.")
+            return self.rejection_sampler.sample(
+                logits,
+                sampling_metadata,
+            )
+
         needs_logprobs = sampling_metadata.max_num_logprobs > 0
         if needs_logprobs:
             # NOTE(woosuk): Use the original logits (before any penalties or
@@ -52,7 +64,7 @@ class Sampler(nn.Module):
         sampled = sampled.to(torch.int32)
 
         sampler_output = SamplerOutput(
-            sampled_token_ids=sampled,
+            sampled_token_ids=sampled.unsqueeze(-1),
             logprob_token_ids=topk_indices,
             logprobs=topk_logprobs,
             prompt_logprob_token_ids=None,

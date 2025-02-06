@@ -27,6 +27,7 @@ from vllm.v1.engine.mm_input_mapper import MMInputMapperServer
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.serial_utils import PickleEncoder
+from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 from vllm.version import __version__ as VLLM_VERSION
 
 logger = init_logger(__name__)
@@ -62,10 +63,16 @@ class EngineCore:
             model_config=vllm_config.model_config,
             cache_config=vllm_config.cache_config,
             lora_config=vllm_config.lora_config,
-        )
+            speculative_config=vllm_config.speculative_config)
 
         self.mm_input_mapper_server = MMInputMapperServer(
             vllm_config.model_config)
+
+        # TODO: find a better way to check if we are using ngram.
+        if self.scheduler.speculative_config:
+            assert self.scheduler.speculative_config.ngram_prompt_lookup_min \
+                    , "Only ngram spec decode is supported in V1."
+            self.proposer = NgramProposer()
 
     def _initialize_kv_caches(self,
                               vllm_config: VllmConfig) -> Tuple[int, int]:
@@ -125,6 +132,9 @@ class EngineCore:
             return EngineCoreOutputs(
                 outputs=[], scheduler_stats=self.scheduler.make_stats())
 
+        if self.scheduler.speculative_config:
+            self.propose_tokens()
+
         scheduler_output = self.scheduler.schedule()
         output = self.model_executor.execute_model(scheduler_output)
         engine_core_outputs = self.scheduler.update_from_output(
@@ -136,6 +146,23 @@ class EngineCore:
 
     def profile(self, is_start: bool = True):
         self.model_executor.profile(is_start)
+
+    def propose_tokens(self):
+        assert self.scheduler.speculative_config is not None
+        for req in self.scheduler.running:
+            # Ignore requests that are doing chunked prefill.
+            if req.num_computed_tokens < req.num_tokens - 1:
+                continue
+            # Ignore requests that already have spec tokens.
+            if len(req.spec_token_ids) > 0:
+                continue
+            spec_tokens = self.proposer.propose(
+                req.all_token_ids,
+                self.scheduler.speculative_config.ngram_prompt_lookup_min,
+                self.scheduler.speculative_config.num_speculative_tokens,
+            )
+            if spec_tokens:
+                req.append_spec_token_ids(spec_tokens)
 
     def reset_prefix_cache(self):
         self.scheduler.reset_prefix_cache()
