@@ -27,7 +27,8 @@ from vllm.attention.backends.utils import (PAD_SLOT_ID, compute_slot_mapping,
                                            compute_slot_mapping_start_idx,
                                            is_block_tables_empty)
 from vllm.attention.ops.triton_decode_attention import decode_attention_fwd
-from vllm.utils import async_tensor_h2d, make_tensor_with_pad
+from vllm.utils import (align_to_256bytes, async_tensor_h2d,
+                        make_tensor_with_pad)
 
 if TYPE_CHECKING:
     from vllm.worker.model_runner import (ModelInputForGPUBuilder,
@@ -263,6 +264,9 @@ class TritonMLAMetadata(MLACommonMetadata):
     # The dimension of the attention heads
     head_dim: Optional[int] = None
 
+    chunked_prefill_workspace: Optional[torch.Tensor] = None
+    prefill_seq_len_total: Optional[int] = None
+
     def __post_init__(self):
         supported_head_sizes = TritonMLABackend.get_supported_head_sizes()
         if self.head_dim is not None and self.head_dim \
@@ -320,7 +324,9 @@ class TritonMLAMetadata(MLACommonMetadata):
             context_lens_tensor=context_lens_tensor,
             block_tables=block_tables,
             use_cuda_graph=False,
-            head_dim=self.head_dim)
+            head_dim=self.head_dim,
+            chunked_prefill_workspace=self.chunked_prefill_workspace,
+            prefill_seq_len_total=seq_lens_tensor.sum().item())
         return self._cached_prefill_metadata
 
     @property
@@ -451,6 +457,21 @@ class TritonMLAMetadataBuilder(AttentionMetadataBuilder[TritonMLAMetadata]):
         self.runner = input_builder.runner
         self.sliding_window = input_builder.sliding_window
         self.block_size = input_builder.block_size
+
+        self.chunked_prefill_workspace = None
+
+        scheduler_config = self.runner.vllm_config.scheduler_config
+        model_config = self.runner.model_config
+
+        if scheduler_config.enable_chunked_prefill:
+            head_size = model_config.get_head_size()
+
+            self.chunked_prefill_workspace = torch.empty(
+                (model_config.max_model_len * scheduler_config.max_num_seqs,
+                 align_to_256bytes(head_size, model_config.dtype)),
+                dtype=model_config.dtype,
+                device=self.runner.device,
+            )[..., :head_size]
 
     def prepare(self):
         self.slot_mapping: List[int] = []
@@ -644,6 +665,7 @@ class TritonMLAMetadataBuilder(AttentionMetadataBuilder[TritonMLAMetadata]):
             use_cuda_graph=use_captured_graph,
             num_kv_splits=4,  # TODO(lucas) add heuristic
             head_dim=self.runner.model_config.get_head_size(),
+            chunked_prefill_workspace=self.chunked_prefill_workspace,
         )
 
 
@@ -686,13 +708,35 @@ class TritonMLAImpl(MLACommonImpl[TritonMLAMetadata]):
     def _forward_prefill(
         self,
         q: torch.Tensor,
-        kv_c_normed: torch.Tensor,
+        kv_c: torch.Tensor,
         k_pe: torch.Tensor,
+        kv_c_and_k_pe_cache: torch.Tensor,
         attn_metadata: TritonMLAMetadata,
     ) -> torch.Tensor:
         assert isinstance(attn_metadata, TritonMLAMetadata)
-        return self._forward_prefill_flash(q, kv_c_normed, k_pe,
+
+        prefill_metadata = attn_metadata.prefill_metadata
+
+        if prefill_metadata.context_lens_tensor is not None \
+            and kv_c_and_k_pe_cache.numel() > 0:
+            workspace = attn_metadata.chunked_prefill_workspace
+
+            ops.gather_cache(
+                src_cache=kv_c_and_k_pe_cache,
+                dst=workspace,
+                block_table=prefill_metadata.block_tables,
+                cu_seq_lens=prefill_metadata.seq_start_loc,
+                batch_size=attn_metadata.num_prefills,
+            )
+
+            toks = prefill_metadata.prefill_seq_len_total
+            kv_c = workspace[:toks][..., :self.kv_lora_rank].unsqueeze(1)
+            k_pe = workspace[:toks][..., self.kv_lora_rank:].unsqueeze(1)
+
+        return self._forward_prefill_flash(q, kv_c, k_pe,
+                                           attn_metadata.query_start_loc,
                                            attn_metadata.seq_start_loc,
+                                           attn_metadata.max_query_len,
                                            attn_metadata.max_prefill_seq_len)
 
     def _forward_decode(
