@@ -22,7 +22,7 @@ from vllm.entrypoints.openai.protocol import (
     ChatCompletionResponseChoice, ChatCompletionResponseStreamChoice,
     ChatCompletionStreamResponse, ChatMessage, DeltaFunctionCall, DeltaMessage,
     DeltaToolCall, ErrorResponse, FunctionCall, PromptTokenUsageInfo,
-    RequestResponseMetadata, ToolCall, UsageInfo, InBandMetrics)
+    RequestResponseMetadata, ToolCall, UsageInfo, InBandMetrics, InBandMetrics)
 from vllm.entrypoints.openai.reasoning_parsers import (ReasoningParser,
                                                        ReasoningParserManager)
 from vllm.entrypoints.openai.serving_engine import OpenAIServing
