@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Union
 
@@ -38,6 +39,32 @@ class FinishReason(enum.IntEnum):
         return FINISH_REASON_STRINGS[self.value]
 
 
+class EngineCoreEventType(enum.IntEnum):
+    """The type of engine core request event."""
+    NEW_TOKENS = 0
+    QUEUED = 1
+    SCHEDULED = 2
+
+
+@dataclass
+class EngineCoreEvent:
+    """A timestamped engine core event associated with a request.
+
+    The timestamp is a monotonic timestamps and is used for by the engine
+    frontend to calculate intervals between engine core events. These
+    timestamps should not be compared with timestamps from other processes.
+    """
+    type: EngineCoreEventType
+    timestamp: float
+
+    @classmethod
+    def new_event(cls,
+                  event_type: EngineCoreEventType,
+                  timestamp: Optional[float] = None) -> "EngineCoreEvent":
+        timestamp = time.monotonic() if timestamp is None else timestamp
+        return cls(event_type, timestamp)
+
+
 @dataclass
 class EngineCoreRequest:
 
@@ -70,6 +97,7 @@ class EngineCoreOutput(
     finished: bool
     finish_reason: Optional[FinishReason] = None
     stop_reason: Union[int, str, None] = None
+    events: Optional[List[EngineCoreEvent]] = None
 
 
 class EngineCoreOutputs(

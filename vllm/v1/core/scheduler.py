@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import (TYPE_CHECKING, Deque, Dict, Iterable, List, Optional, Set,
@@ -113,6 +114,8 @@ class Scheduler:
         # Encoder-related.
         scheduled_encoder_inputs: Dict[str, List[int]] = {}
         encoder_budget = self.max_num_encoder_input_tokens
+
+        scheduled_timestamp = time.monotonic()
 
         # First, schedule the RUNNING requests.
         req_index = 0
@@ -228,6 +231,7 @@ class Scheduler:
                 self.running.append(request)
                 if request.status == RequestStatus.WAITING:
                     scheduled_new_reqs.append(request)
+                    request.scheduled(scheduled_timestamp)
                 elif request.status == RequestStatus.PREEMPTED:
                     scheduled_resumed_reqs.append(request)
                 else:
@@ -415,6 +419,8 @@ class Scheduler:
         new_running: List[Request] = []
         outputs: List[EngineCoreOutput] = []
 
+        output_timestamp = time.monotonic()
+
         # NOTE(woosuk): As len(self.running) can be up to 1K or more, the below
         # loop can be a performance bottleneck. We should do our best to avoid
         # expensive operations inside the loop.
@@ -460,13 +466,16 @@ class Scheduler:
                 if stopped:
                     self._free_request(request)
 
+                request.new_tokens(output_timestamp)
+
                 # Add EngineCoreOutput for this Request.
                 output = EngineCoreOutput(
                     request_id=req_id,
                     new_token_ids=request.output_token_ids[-num_new_tokens:],
                     finished=request.is_finished(),
                     finish_reason=request.get_finished_reason(),
-                    stop_reason=request.stop_reason)
+                    stop_reason=request.stop_reason,
+                    events=request.take_events())
                 outputs.append(output)
 
                 # Breakout of the loop.
@@ -477,7 +486,7 @@ class Scheduler:
         self.running = new_running
         return EngineCoreOutputs(
             outputs=outputs,
-            scheduler_stats=self.make_stats(scheduler_output),
+            scheduler_stats=self.make_stats(),
         )
 
     def _check_stop(self, request: Request) -> bool:
@@ -502,6 +511,7 @@ class Scheduler:
     def add_request(self, request: Request) -> None:
         self.waiting.append(request)
         self.requests[request.request_id] = request
+        request.queued()
 
     def finish_requests(
         self,
@@ -548,22 +558,11 @@ class Scheduler:
     def reset_prefix_cache(self) -> bool:
         return self.kv_cache_manager.reset_prefix_cache()
 
-    def make_stats(
-        self,
-        scheduler_output: Optional["SchedulerOutput"] = None
-    ) -> SchedulerStats:
-        if scheduler_output is not None and scheduler_output.scheduled_new_reqs:
-            scheduled_new_reqs = [
-                req_data.req_id
-                for req_data in scheduler_output.scheduled_new_reqs
-            ]
-        else:
-            scheduled_new_reqs = None
+    def make_stats(self) -> SchedulerStats:
         return SchedulerStats(
             num_running_reqs=len(self.running),
             num_waiting_reqs=len(self.waiting),
             gpu_cache_usage=self.kv_cache_manager.usage,
-            scheduled_new_reqs=scheduled_new_reqs,
         )
 
 

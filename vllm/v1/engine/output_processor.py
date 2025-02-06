@@ -39,8 +39,7 @@ class RequestState:
         self.is_prefilling = True
         self.queue = queue
 
-        self.stats = RequestStateStats(arrival_time=arrival_time,
-                                       last_token_time=arrival_time)
+        self.stats = RequestStateStats(arrival_time=arrival_time)
 
     @classmethod
     def from_new_request(
@@ -103,15 +102,6 @@ class OutputProcessor:
             tokenizer=self.tokenizer.get_lora_tokenizer(request.lora_request),
             request=request,
             queue=queue)
-
-    def record_first_scheduled_time(self, scheduled_new_reqs: List[str],
-                                    iteration_stats: IterationStats) -> None:
-        for req_id in scheduled_new_reqs:
-            req_state = self.request_states.get(req_id)
-            if req_state is None:
-                # Ignore output for already-aborted request.
-                continue
-            iteration_stats.update_from_newly_scheduled(req_state.stats)
 
     def process_outputs(
         self,

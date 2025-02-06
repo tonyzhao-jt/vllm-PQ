@@ -246,12 +246,7 @@ class AsyncLLM(EngineClient):
                 # 1) Pull EngineCoreOutputs from the EngineCore.
                 outputs = await self.engine_core.get_output_async()
 
-                # Record a timestamp for newly scheduled requests
                 iteration_stats = IterationStats(self.log_stats)
-                if outputs.scheduler_stats.scheduled_new_reqs is not None:
-                    self.output_processor.record_first_scheduled_time(
-                        outputs.scheduler_stats.scheduled_new_reqs,
-                        iteration_stats)
 
                 # Split outputs into chunks of at most
                 # VLLM_V1_OUTPUT_PROC_CHUNK_SIZE, so that we don't block the
