@@ -497,6 +497,7 @@ def test_get_cross_attention_mask(input_indices_and_output) -> None:
         context_lens_tensor=None,
         block_tables=None,
         use_cuda_graph=False,
+        num_orig_input_tokens_tensor=None,
     )
 
     dummy: dict[str, str] = {}
@@ -554,6 +555,7 @@ def test_get_full_text_row_masked_out_mask(input_indices) -> None:
         context_lens_tensor=None,
         block_tables=None,
         use_cuda_graph=False,
+        num_orig_input_tokens_tensor=None,
     )
 
     dummy: dict[str, str] = {}

@@ -160,6 +160,8 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
         assert len(seq_group_metadata_list) > 0
         input_tokens: List[int] = []
         input_positions: List[int] = []
+        # The number of original input tokens of each sequence
+        num_orig_input_tokens_list: List[int] = []
         slot_mapping: List[int] = []
         seq_lens: List[int] = []
         multi_modal_kwargs_list: List[MultiModalKwargs] = []
@@ -208,6 +210,9 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
                     multi_modal_placeholder_maps[modality].extend(
                         placeholder_map)
 
+            num_orig_input_tokens_list.extend([seq_data.get_prompt_len()] *
+                                              (seq_len - computed_len))
+
             if seq_group_metadata.block_tables is None:
                 # During memory profiling, the block tables are not initialized
                 # yet. In this case, we just use a dummy slot mapping.
@@ -244,6 +249,9 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
         input_positions = torch.tensor(input_positions,
                                        dtype=torch.long,
                                        device=self.device)  # type: ignore
+        num_orig_input_tokens_tensor = torch.tensor(
+            num_orig_input_tokens_list, dtype=torch.long,
+            device=self.device)  # type: ignore
         slot_mapping = torch.tensor(slot_mapping,
                                     dtype=torch.long,
                                     device=self.device)  # type: ignore
@@ -273,6 +281,7 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
             num_prefill_tokens=num_prompt_tokens,
             num_decode_tokens=0,
             block_tables=torch.tensor([], device=self.device, dtype=torch.int),
+            num_orig_input_tokens_tensor=num_orig_input_tokens_tensor,
         )
 
         multi_modal_kwargs = MultiModalKwargs.batch(multi_modal_kwargs_list)
@@ -287,6 +296,8 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
         assert len(seq_group_metadata_list) > 0
         input_tokens: List[int] = []
         input_positions: List[int] = []
+        # The number of original input tokens of each sequence
+        num_orig_input_tokens_list: List[int] = []
         slot_mapping: List[int] = []
         seq_lens: List[int] = []
         block_tables: List[List[int]] = []
@@ -305,6 +316,7 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
                 seq_len = seq_data.get_len()
                 position = seq_len - 1
                 input_positions.append(position)
+                num_orig_input_tokens_list.append(seq_data.get_prompt_len())
 
                 seq_len = seq_len if self.sliding_window is None else min(
                     seq_len, self.sliding_window)
@@ -336,6 +348,9 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
         seq_lens_tensor = torch.tensor(seq_lens,
                                        dtype=torch.int,
                                        device=self.device)
+        num_orig_input_tokens_tensor = torch.tensor(num_orig_input_tokens_list,
+                                                    dtype=torch.long,
+                                                    device=self.device)
 
         block_tables = make_tensor_with_pad(
             block_tables,
@@ -358,6 +373,7 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
             num_decode_tokens=len(input_tokens),
             num_prefills=0,
             block_tables=block_tables,
+            num_orig_input_tokens_tensor=num_orig_input_tokens_tensor,
         )
         return (
             input_tokens,
