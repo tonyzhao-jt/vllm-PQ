@@ -153,7 +153,7 @@ class TP1DraftModelRunner(ModelRunnerWrapperBase):
                 return False
 
         # TODO: Add support for other attn backends
-        if self.attn_backend.get_name() != "FLASH_ATTN":
+        if self.attn_backend.get_name() not in ("FLASH_ATTN", "TRITON_MLA"):
             return False
 
         # TODO: Add support for LORA
@@ -281,8 +281,8 @@ class TP1DraftModelRunner(ModelRunnerWrapperBase):
                 # for DeepSeek MTP only to use the corresponding layer for
                 # each step
                 spec_step_idx = kwargs.get("spec_step_idx", 0)
-                model_execute_kwargs["spec_step_idx"] = spec_step_idx
-                compute_logits_kwargs["spec_step_idx"] = spec_step_idx
+                model_execute_kwargs["spec_step_idx"] = max(spec_step_idx, step)
+                compute_logits_kwargs["spec_step_idx"] = max(spec_step_idx, step)
             with set_forward_context(model_input.attn_metadata,
                                      self.vllm_config):
                 hidden_states = model_executable(
