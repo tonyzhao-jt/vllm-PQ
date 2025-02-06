@@ -13,7 +13,7 @@ from vllm.attention.backends.abstract import AttentionType
 from vllm.attention.layer import Attention
 from vllm.config import CompilationLevel, VllmConfig
 from vllm.distributed.parallel_state import graph_capture
-from vllm.forward_context import set_forward_context
+from vllm.forward_context import ForwardMetadata, set_forward_context
 from vllm.inputs import INPUT_REGISTRY
 from vllm.logger import init_logger
 from vllm.model_executor.layers.rotary_embedding import MRotaryEmbedding
@@ -61,7 +61,6 @@ class GPUModelRunner:
         model_config = self.model_config
         cache_config = self.cache_config
         scheduler_config = self.scheduler_config
-        parallel_config = self.parallel_config
         self.device = device
         self.pin_memory = is_pin_memory_available()
         self.dtype = self.model_config.dtype
@@ -73,19 +72,10 @@ class GPUModelRunner:
 
         self.is_multimodal_model = model_config.is_multimodal_model
         self.sliding_window = model_config.get_sliding_window()
-        self.block_size = cache_config.block_size
         self.max_model_len = model_config.max_model_len
-        self.max_num_blocks_per_req = cdiv(self.max_model_len, self.block_size)
         self.max_num_tokens = scheduler_config.max_num_batched_tokens
         self.max_num_reqs = scheduler_config.max_num_seqs
 
-        # Model-related.
-        self.num_attn_layers = model_config.get_num_layers_by_block_type(
-            parallel_config, LayerBlockType.attention)
-        self.num_query_heads = model_config.get_num_attention_heads(
-            parallel_config)
-        self.num_kv_heads = model_config.get_num_kv_heads(parallel_config)
-        self.head_size = model_config.get_head_size()
         self.hidden_size = model_config.get_hidden_size()
 
         # Multi-modal data support
@@ -112,15 +102,6 @@ class GPUModelRunner:
 
         # Request states.
         self.requests: Dict[str, CachedRequestState] = {}
-        # Persistent batch.
-        self.input_batch = InputBatch(
-            max_num_reqs=self.max_num_reqs,
-            max_model_len=self.max_model_len,
-            max_num_blocks_per_req=self.max_num_blocks_per_req,
-            device=self.device,
-            pin_memory=self.pin_memory,
-            vocab_size=model_config.get_vocab_size(),
-        )
 
         self.use_cuda_graph = (self.vllm_config.compilation_config.level
                                == CompilationLevel.PIECEWISE
@@ -189,11 +170,14 @@ class GPUModelRunner:
                                          device="cpu",
                                          pin_memory=self.pin_memory)
         self.positions_np = self.positions_cpu.numpy()
-        self.slot_mapping_cpu = torch.zeros(self.max_num_tokens,
-                                            dtype=torch.int32,
-                                            device="cpu",
-                                            pin_memory=self.pin_memory)
-        self.slot_mapping_np = self.slot_mapping_cpu.numpy()
+
+        self.kv_cache_config = cast(KVCacheConfig,
+                                    None)  # Set by initialize_kv_cache
+
+        # InputBatch depends on KVCacheConfig, assign a fake value here and
+        # initialize in `initialize_kv_cache``.
+        self.input_batch = cast(InputBatch, None)  # Persistent batch.
+
         self.query_start_loc_cpu = torch.zeros(self.max_num_reqs + 1,
                                                dtype=torch.int32,
                                                device="cpu",
@@ -337,10 +321,8 @@ class GPUModelRunner:
             # Update the persistent batch.
             self.input_batch.num_computed_tokens_cpu[req_index] = (
                 req_data.num_computed_tokens)
-            start_index = len(req_state.block_ids) - len(
-                req_data.new_block_ids)
-            self.input_batch.block_table.append_row(req_index, start_index,
-                                                    req_data.new_block_ids)
+            self.input_batch.block_table.append_row(req_data.new_block_ids,
+                                                    req_index)
 
         # Add the new or resumed requests to the persistent batch.
         # The smaller empty indices are filled first.
@@ -425,24 +407,6 @@ class GPUModelRunner:
                            torch.from_numpy(token_indices),
                            out=self.input_ids_cpu[:total_num_scheduled_tokens])
 
-        # Calculate the slot mapping.
-        # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
-        # -> [0, 0, K, K, K + 1, K + 1, K + 2, 2 * K, 2 * K, 2 * K + 1]
-        # where K is the max_num_blocks_per_req and the block size is 2.
-        # NOTE(woosuk): We can't simply use `token_indices // block_size` here
-        # because M (max_model_len) is not necessarily divisible by block_size.
-        block_table_indices = (req_indices * self.max_num_blocks_per_req +
-                               positions_np // self.block_size)
-        # NOTE(woosuk): We use torch.index_select instead of np.take here
-        # because torch.index_select is much faster than np.take for large
-        # tensors.
-        block_table_cpu = self.input_batch.block_table.get_cpu_tensor()
-        block_numbers = block_table_cpu.flatten()[block_table_indices].numpy()
-        block_offsets = positions_np % self.block_size
-        np.add(block_numbers * self.block_size,
-               block_offsets,
-               out=self.slot_mapping_np[:total_num_scheduled_tokens])
-
         # Prepare the attention metadata.
         self.query_start_loc_np[0] = 0
         self.query_start_loc_np[1:num_reqs + 1] = cu_num_tokens
@@ -469,102 +433,137 @@ class GPUModelRunner:
             self.device, non_blocking=True)
         seq_lens = self.seq_lens_cpu[:num_reqs].to(self.device,
                                                    non_blocking=True)
-        slot_mapping = self.slot_mapping_cpu[:total_num_scheduled_tokens].to(
-            self.device, non_blocking=True).long()
 
-        # Prepare for cascade attention if needed.
-        common_prefix_len = (scheduler_output.num_common_prefix_blocks *
-                             self.block_size)
-        if common_prefix_len == 0:
-            # Common case.
-            use_cascade = False
-        else:
-            # NOTE(woosuk): Cascade attention uses two attention kernels: one
-            # for the common prefix and the other for the rest. For the first
-            # kernel, we concatenate all the query tokens (possibly from
-            # different requests) and treat them as if they are from the same
-            # request. Then, we use bi-directional attention to process the
-            # common prefix in the KV cache. Importantly, this means that the
-            # first kernel does not do any masking.
+        attn_metadata: Dict[str, FlashAttentionMetadata] = {}
 
-            # Consider the following example:
-            # Request 1's input query: [D, E, X]
-            # Request 1's kv cache: [A, B, C, D, E, X]
-            # Request 1's num_computed_tokens: 3 (i.e., [A, B, C])
-            # Request 2's input query: [E, Y]
-            # Request 2's kv cache: [A, B, C, D, E, Y]
-            # Request 2's num_computed_tokens: 4 (i.e., [A, B, C, D])
+        for group_id, kv_cache_group in enumerate(self.kv_cache_config.groups):
+            block_size = kv_cache_group.kv_cache_spec.block_size
+            block_table = self.input_batch.block_table[group_id]
 
-            # If we use [A, B, C, D, E] as the common prefix, then the
-            # first kernel will compute the bi-directional attention between
-            # input query [D, E, X, E, Y] and common prefix [A, B, C, D, E].
-            # However, this is wrong because D in Request 1 should not attend to
-            # E in the common prefix (i.e., we need masking).
-            # To avoid this, [A, B, C, D] should be the common prefix.
-            # That is, the common prefix should be capped by the minimum
-            # num_computed_tokens among the requests, and plus one to include
-            # the first token of the query.
+            # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
+            # -> [0, 0, K, K, K + 1, K + 1, K + 2, 2 * K, 2 * K, 2 * K + 1]
+            # where K is the max_num_blocks_per_req and the block size is 2.
+            # NOTE(woosuk): We can't simply use `token_indices // block_size`
+            # here because M (max_model_len) is not necessarily divisible by
+            # block_size.
+            block_table_indices = (
+                req_indices * block_table.max_num_blocks_per_req +
+                positions_np // block_size)
+            # NOTE(woosuk): We use torch.index_select instead of np.take here
+            # because torch.index_select is much faster than np.take for large
+            # tensors.
+            block_table_cpu = block_table.get_cpu_tensor()
+            block_numbers = block_table_cpu.flatten(
+            )[block_table_indices].numpy()
+            block_offsets = positions_np % block_size
+            np.add(
+                block_numbers * block_size,
+                block_offsets,
+                out=block_table.slot_mapping_np[:total_num_scheduled_tokens])
+            slot_mapping = block_table.slot_mapping_cpu \
+                [:total_num_scheduled_tokens] \
+                .to(self.device, non_blocking=True).long()
 
-            # In practice, we use [A, B, C] as the common prefix, instead of
-            # [A, B, C, D] (i.e., the common prefix is capped by the minimum
-            # num_computed_tokens, without plus one).
-            # This is because of an implementation detail: We want to always
-            # use two kernels for cascade attention. Let's imagine:
-            # Request 3's input query: [D]
-            # Request 3's kv cache: [A, B, C, D]
-            # Request 3's num_computed_tokens: 4 (i.e., [A, B, C, D])
-            # If we use [A, B, C, D] as the common prefix for Request 1-3,
-            # then Request 3 will be processed only by the first kernel,
-            # and the second kernel will get an empty input. While this is not
-            # a fundamental problem, our current implementation does not support
-            # this case.
-            common_prefix_len = min(
-                common_prefix_len,
-                self.input_batch.num_computed_tokens_cpu[:num_reqs].min())
-            # common_prefix_len should be a multiple of the block size.
-            common_prefix_len = (common_prefix_len // self.block_size *
-                                 self.block_size)
-            use_cascade = FlashAttentionBackend.use_cascade_attention(
+            # Prepare for cascade attention if needed.
+            common_prefix_len = (
+                scheduler_output.num_common_prefix_blocks[group_id] *
+                block_size)
+            if common_prefix_len == 0:
+                # Common case.
+                use_cascade = False
+            else:
+                # NOTE(woosuk): Cascade attention uses two attention kernels:
+                # one for the common prefix and the other for the rest. For the
+                # first kernel, we concatenate all the query tokens (possibly
+                # from different requests) and treat them as if they are from
+                # the same request. Then, we use bi-directional attention to
+                # process the common prefix in the KV cache. Importantly, this
+                # means that the first kernel does not do any masking.
+
+                # Consider the following example:
+                # Request 1's input query: [D, E, X]
+                # Request 1's kv cache: [A, B, C, D, E, X]
+                # Request 1's num_computed_tokens: 3 (i.e., [A, B, C])
+                # Request 2's input query: [E, Y]
+                # Request 2's kv cache: [A, B, C, D, E, Y]
+                # Request 2's num_computed_tokens: 4 (i.e., [A, B, C, D])
+
+                # If we use [A, B, C, D, E] as the common prefix, then the
+                # first kernel will compute the bi-directional attention between
+                # input query [D, E, X, E, Y] and common prefix [A, B, C, D, E].
+                # However, this is wrong because D in Request 1 should not
+                # attend to E in the common prefix (i.e., we need masking).
+                # To avoid this, [A, B, C, D] should be the common prefix.
+                # That is, the common prefix should be capped by the minimum
+                # num_computed_tokens among the requests, and plus one to
+                # include the first token of the query.
+
+                # In practice, we use [A, B, C] as the common prefix, instead of
+                # [A, B, C, D] (i.e., the common prefix is capped by the minimum
+                # num_computed_tokens, without plus one).
+                # This is because of an implementation detail: We want to always
+                # use two kernels for cascade attention. Let's imagine:
+                # Request 3's input query: [D]
+                # Request 3's kv cache: [A, B, C, D]
+                # Request 3's num_computed_tokens: 4 (i.e., [A, B, C, D])
+                # If we use [A, B, C, D] as the common prefix for Request 1-3,
+                # then Request 3 will be processed only by the first kernel,
+                # and the second kernel will get an empty input. While this is
+                # not a fundamental problem, our current implementation does not
+                # support this case.
+                common_prefix_len = min(
+                    common_prefix_len,
+                    self.input_batch.num_computed_tokens_cpu[:num_reqs].min())
+                # common_prefix_len should be a multiple of the block size.
+                common_prefix_len = (common_prefix_len // block_size *
+                                     block_size)
+                kv_cache_spec = kv_cache_group.kv_cache_spec
+                assert isinstance(kv_cache_spec, FullAttentionSpec)
+                use_cascade = FlashAttentionBackend.use_cascade_attention(
+                    common_prefix_len=common_prefix_len,
+                    query_lens=num_scheduled_tokens,
+                    num_query_heads=kv_cache_spec.num_heads,
+                    num_kv_heads=kv_cache_spec.num_kv_heads,
+                    use_alibi=False,  # FIXME
+                    use_sliding_window=self.sliding_window is not None,
+                    num_sms=self.num_sms,
+                )
+
+            if use_cascade:
+                # TODO: Optimize.
+                cu_prefix_query_lens = torch.tensor(
+                    [0, total_num_scheduled_tokens],
+                    dtype=torch.int32,
+                    device=self.device)
+                prefix_kv_lens = torch.tensor([common_prefix_len],
+                                              dtype=torch.int32,
+                                              device=self.device)
+                suffix_kv_lens = (self.seq_lens_np[:num_reqs] -
+                                  common_prefix_len)
+                suffix_kv_lens = torch.from_numpy(suffix_kv_lens).to(
+                    self.device)
+            else:
+                cu_prefix_query_lens = None
+                prefix_kv_lens = None
+                suffix_kv_lens = None
+
+            attn_metadata_of_group = FlashAttentionMetadata(
+                num_actual_tokens=total_num_scheduled_tokens,
+                max_query_len=max_num_scheduled_tokens,
+                query_start_loc=query_start_loc,
+                max_seq_len=max_seq_len,
+                seq_lens=seq_lens,
+                block_table=block_table.get_device_tensor()[:num_reqs],
+                slot_mapping=slot_mapping,
+                use_cascade=use_cascade,
                 common_prefix_len=common_prefix_len,
-                query_lens=num_scheduled_tokens,
-                num_query_heads=self.num_query_heads,
-                num_kv_heads=self.num_kv_heads,
-                use_alibi=False,  # FIXME
-                use_sliding_window=self.sliding_window is not None,
-                num_sms=self.num_sms,
+                cu_prefix_query_lens=cu_prefix_query_lens,
+                prefix_kv_lens=prefix_kv_lens,
+                suffix_kv_lens=suffix_kv_lens,
             )
 
-        if use_cascade:
-            # TODO: Optimize.
-            cu_prefix_query_lens = torch.tensor(
-                [0, total_num_scheduled_tokens],
-                dtype=torch.int32,
-                device=self.device)
-            prefix_kv_lens = torch.tensor([common_prefix_len],
-                                          dtype=torch.int32,
-                                          device=self.device)
-            suffix_kv_lens = (self.seq_lens_np[:num_reqs] - common_prefix_len)
-            suffix_kv_lens = torch.from_numpy(suffix_kv_lens).to(self.device)
-        else:
-            cu_prefix_query_lens = None
-            prefix_kv_lens = None
-            suffix_kv_lens = None
-
-        attn_metadata = FlashAttentionMetadata(
-            num_actual_tokens=total_num_scheduled_tokens,
-            max_query_len=max_num_scheduled_tokens,
-            query_start_loc=query_start_loc,
-            max_seq_len=max_seq_len,
-            seq_lens=seq_lens,
-            block_table=(
-                self.input_batch.block_table.get_device_tensor()[:num_reqs]),
-            slot_mapping=slot_mapping,
-            use_cascade=use_cascade,
-            common_prefix_len=common_prefix_len,
-            cu_prefix_query_lens=cu_prefix_query_lens,
-            prefix_kv_lens=prefix_kv_lens,
-            suffix_kv_lens=suffix_kv_lens,
-        )
+            for layer_name in kv_cache_group.layer_names:
+                attn_metadata[layer_name] = attn_metadata_of_group
         # NOTE(woosuk): Due to chunked prefills, the batch may contain partial
         # requests. While we should not sample any token from these partial
         # requests, we do so for simplicity. We will ignore the sampled
@@ -758,7 +757,8 @@ class GPUModelRunner:
         else:
             # Eager mode.
             num_input_tokens = num_scheduled_tokens
-        attn_metadata.num_input_tokens = num_input_tokens
+
+        forward_metadata = ForwardMetadata(num_input_tokens=num_input_tokens)
 
         if self.is_multimodal_model:
             # NOTE(woosuk): To unify token ids and soft tokens (vision
@@ -784,7 +784,9 @@ class GPUModelRunner:
 
         # Run the decoder.
         # Use persistent buffers for CUDA graphs.
-        with set_forward_context(attn_metadata, self.vllm_config):
+        with set_forward_context(attn_metadata,
+                                 self.vllm_config,
+                                 forward_metadata=forward_metadata):
             positions = self.mrope_positions[:, :num_input_tokens] \
                 if self.model_config.uses_mrope \
                 else self.positions[:num_input_tokens]
@@ -908,9 +910,11 @@ class GPUModelRunner:
         # it is important to create tensors inside the loop, rather than
         # multiplying the list, to avoid Dynamo from treating them as
         # tensor aliasing.
+        num_attn_layers = self.model_config.get_num_layers_by_block_type(
+            self.parallel_config, LayerBlockType.attention)
         dummy_kv_caches = [
             torch.tensor([], dtype=torch.float32, device=self.device)
-            for _ in range(self.num_attn_layers)
+            for _ in range(num_attn_layers)
         ]
 
         # Profile with multimodal encoder & encoder cache.
@@ -1050,34 +1054,43 @@ class GPUModelRunner:
             kv_cache_config: Configuration for the KV cache, including the KV 
             cache size of each layer
         """
-        if len(kv_cache_config.groups) > 1:
-            raise NotImplementedError(
-                "Hybrid models with more than one KV cache type are not "
-                "supported yet.")
+        self.kv_cache_config = kv_cache_config
 
         kv_caches: Dict[str, torch.Tensor] = {}
 
-        for layer_name, layer_spec in kv_cache_config.kv_cache_spec.items():
-            tensor_config = kv_cache_config.tensors[layer_name]
-            assert tensor_config.size % layer_spec.page_size_bytes == 0
-            num_blocks = tensor_config.size // layer_spec.page_size_bytes
-            if isinstance(layer_spec, FullAttentionSpec):
-                kv_cache_shape = FlashAttentionBackend.get_kv_cache_shape(
-                    num_blocks, layer_spec.block_size, layer_spec.num_kv_heads,
-                    layer_spec.head_size)
-                dtype = layer_spec.dtype
-                kv_caches[layer_name] = torch.zeros(kv_cache_shape,
-                                                    dtype=dtype,
-                                                    device=self.device)
-            else:
-                raise NotImplementedError
+        for kv_cache_group in kv_cache_config.groups:
+            kv_cache_spec = kv_cache_group.kv_cache_spec
+            for layer_name in kv_cache_group.layer_names:
+                tensor_config = kv_cache_config.tensors[layer_name]
+                assert tensor_config.size % kv_cache_spec.page_size_bytes == 0
+                num_blocks = tensor_config.size // kv_cache_spec.page_size_bytes
+                if isinstance(kv_cache_spec, FullAttentionSpec):
+                    kv_cache_shape = FlashAttentionBackend.get_kv_cache_shape(
+                        num_blocks, kv_cache_spec.block_size,
+                        kv_cache_spec.num_kv_heads, kv_cache_spec.head_size)
+                    dtype = kv_cache_spec.dtype
+                    kv_caches[layer_name] = torch.zeros(kv_cache_shape,
+                                                        dtype=dtype,
+                                                        device=self.device)
+                else:
+                    raise NotImplementedError
 
         bind_kv_cache(
             kv_caches,
             self.vllm_config.compilation_config.static_forward_context,
             self.kv_caches)
 
-    def get_kv_cache_spec(self) -> KVCacheSpec:
+        self.input_batch = InputBatch(
+            max_num_reqs=self.max_num_reqs,
+            max_model_len=self.max_model_len,
+            max_num_tokens=self.max_num_tokens,
+            device=self.device,
+            pin_memory=self.pin_memory,
+            vocab_size=self.vllm_config.model_config.get_vocab_size(),
+            kv_cache_config=kv_cache_config,
+        )
+
+    def get_kv_cache_spec(self) -> Dict[str, KVCacheSpec]:
         """
         Generates the KVCacheSpec by parsing the kv cache format from each 
         Attention module in the static forward context.
@@ -1088,7 +1101,7 @@ class GPUModelRunner:
 
         forward_ctx = self.vllm_config.compilation_config.static_forward_context
         block_size = self.vllm_config.cache_config.block_size
-        kv_cache_spec: KVCacheSpec = {}
+        kv_cache_spec: Dict[str, KVCacheSpec] = {}
         for layer_name, attn_module in forward_ctx.items():
             # TODO: Support other attention modules, e.g., sliding window,
             # cross-attention, MLA.
@@ -1096,6 +1109,7 @@ class GPUModelRunner:
             if attn_module.attn_type == AttentionType.DECODER:
                 kv_cache_spec[layer_name] = FullAttentionSpec(
                     block_size=block_size,
+                    num_heads=attn_module.num_heads,
                     num_kv_heads=attn_module.num_kv_heads,
                     head_size=attn_module.head_size,
                     dtype=attn_module.dtype,

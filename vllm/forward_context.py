@@ -4,7 +4,7 @@ import time
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import torch
 
@@ -26,12 +26,31 @@ batchsize_forward_time: defaultdict = defaultdict(list)
 
 @dataclass
 class ForwardContext:
-    # copy from vllm_config.compilation_config.static_forward_context
+    """
+    Map from layer_name to all attention modules
+    copy from vllm_config.compilation_config.static_forward_context
+    """
     attn_layers: Dict[str, Any]
-    # TODO: extend to support per-layer dynamic forward context
-    attn_metadata: "AttentionMetadata"  # set dynamically for each forward pass
-    # TODO: remove after making all virtual_engines share the same kv cache
+    """
+    Type AttentionMetadata for v0, 
+    Type Dict[str, AttentionMetadata] for v1, mapping from layer_name to 
+    AttentionMetadata of that layer
+    set dynamically for each forward pass
+    """
+    attn_metadata: Union["AttentionMetadata", Dict[str, "AttentionMetadata"]]
+    """
+    The virtual_engine for v0 pipeline parallelism
+    set dynamically for each forward pass
+    """
     virtual_engine: int  # set dynamically for each forward pass
+
+
+@dataclass
+class ForwardMetadata:
+    """
+    Forward metadata for each forward pass
+    """
+    num_input_tokens: int
 
 
 _forward_context: Optional[ForwardContext] = None
@@ -48,7 +67,8 @@ def get_forward_context() -> ForwardContext:
 @contextmanager
 def set_forward_context(attn_metadata: Any,
                         vllm_config: VllmConfig,
-                        virtual_engine: int = 0):
+                        virtual_engine: int = 0,
+                        forward_metadata: Optional[ForwardMetadata] = None):
     """A context manager that stores the current forward context,
     can be attention metadata, etc.
     Here we can inject common logic for every model forward pass.
@@ -68,13 +88,14 @@ def set_forward_context(attn_metadata: Any,
     finally:
         global last_logging_time, batchsize_logging_interval
         if need_to_track_batchsize:
-            if hasattr(attn_metadata, "num_prefill_tokens"):
+            if not envs.VLLM_USE_V1:
                 # for v0 attention backends
                 batchsize = attn_metadata.num_prefill_tokens + \
                     attn_metadata.num_decode_tokens
             else:
                 # for v1 attention backends
-                batchsize = attn_metadata.num_input_tokens
+                assert forward_metadata is not None
+                batchsize = forward_metadata.num_input_tokens
             # we use synchronous scheduling right now,
             # adding a sync point here should not affect
             # scheduling of the next batch

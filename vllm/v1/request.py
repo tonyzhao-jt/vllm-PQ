@@ -65,8 +65,9 @@ class Request:
 
         # Cache the computed kv block hashes of the request to avoid
         # recomputing.
-        self._kv_block_hashes: List[BlockHashType] = []
-        self.kv_block_hashes = ConstantList(self._kv_block_hashes)
+        self._kv_block_hashes: List[List[BlockHashType]] = []
+        self.kv_block_hashes = ConstantList(
+            [ConstantList(x) for x in self._kv_block_hashes])
 
         # Read-only views
         # Prevent directly appending to the these lists since
@@ -124,12 +125,17 @@ class Request:
         num_tokens = self.mm_positions[input_id]["length"]
         return num_tokens
 
-    def set_kv_block_hashes(self, value: List["BlockHashType"]) -> None:
+    def set_kv_block_hashes(self, value: List[List["BlockHashType"]]) -> None:
         self._kv_block_hashes = value
-        self.kv_block_hashes = ConstantList(self._kv_block_hashes)
+        # NOTE: self.kv_block_hashes._x is not self._kv_block_hashes, but
+        # self.kv_block_hashes[0]._x is self._kv_block_hashes[0]. This is
+        # correct because we never need to update the outer list.
+        self.kv_block_hashes = ConstantList(
+            [ConstantList(x) for x in self._kv_block_hashes])
 
-    def append_kv_block_hashes(self, block_hash: "BlockHashType") -> None:
-        self._kv_block_hashes.append(block_hash)
+    def append_kv_block_hashes(self, group_id: int,
+                               block_hash: "BlockHashType") -> None:
+        self._kv_block_hashes[group_id].append(block_hash)
 
 
 class RequestStatus(enum.IntEnum):

@@ -1,18 +1,21 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import TYPE_CHECKING, Dict, List
 
 import torch
 
 from vllm.logger import init_logger
 from vllm.utils import cdiv, get_dtype_size
 
+if TYPE_CHECKING:
+    from vllm.v1.core.kv_cache_utils import ReqKVCacheBlocks
+
 logger = init_logger(__name__)
 
 
 @dataclass
-class KVCacheSpecBase:
+class KVCacheSpec:
     """
     A base class for specifying the KV cache format of one layer.
     """
@@ -56,7 +59,8 @@ class KVCacheSpecBase:
 
 
 @dataclass
-class FullAttentionSpec(KVCacheSpecBase):
+class FullAttentionSpec(KVCacheSpec):
+    num_heads: int
     num_kv_heads: int
     head_size: int
     dtype: torch.dtype
@@ -74,9 +78,6 @@ class FullAttentionSpec(KVCacheSpecBase):
         return cdiv(num_tokens, self.block_size) * self.page_size_bytes
 
 
-KVCacheSpec = Dict[str, KVCacheSpecBase]
-
-
 @dataclass
 class KVCacheTensor:
     """
@@ -85,6 +86,17 @@ class KVCacheTensor:
     be extended to support multiple layers sharing the same memory pool.
     """
     size: int  # The size of KV cache Tensor in bytes
+
+
+@dataclass
+class KVCacheGroup:
+    """
+    A dataclass for specifying the KV cache group of a model.
+    """
+    # The names of layers in this group
+    layer_names: List[str]
+    # The KV cache spec of this group
+    kv_cache_spec: KVCacheSpec
 
 
 @dataclass
@@ -108,6 +120,31 @@ class KVCacheConfig:
     3. (not implemented yet) A model with 2 full attention layers and 4 sliding 
     window attention layers: three groups, (full * 2), (sw * 2), (sw * 2).
     """
-    groups: List[List[str]]
-    """the KVCacheSpec of the model"""
-    kv_cache_spec: KVCacheSpec
+    groups: List[KVCacheGroup]
+
+
+@dataclass
+class GroupedBlockIDs:
+    # A list of block IDs for each group of KV cache blocks
+    _block_ids: List[List[int]]
+
+    def __init__(self, block_ids: List[List[int]]):
+        self._block_ids = block_ids
+
+    @classmethod
+    def from_kv_cache_blocks(cls, kv_cache_blocks: "ReqKVCacheBlocks"):
+        return cls(
+            block_ids=[[blk.block_id for blk in kv_cache_blocks_one_group]
+                       for kv_cache_blocks_one_group in kv_cache_blocks])
+
+    def extend(self, new_block_ids: "GroupedBlockIDs") -> None:
+        for i, block_ids in enumerate(new_block_ids._block_ids):
+            self._block_ids[i].extend(block_ids)
+
+    def __add__(self, other: "GroupedBlockIDs") -> "GroupedBlockIDs":
+        return GroupedBlockIDs(block_ids=[
+            a + b for a, b in zip(self._block_ids, other._block_ids)
+        ])
+
+    def get_group(self, group_idx: int) -> List[int]:
+        return self._block_ids[group_idx]
