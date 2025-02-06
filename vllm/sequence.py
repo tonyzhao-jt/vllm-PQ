@@ -66,6 +66,7 @@ class SequenceStatus(enum.IntEnum):
     FINISHED_LENGTH_CAPPED = 4
     FINISHED_ABORTED = 5
     FINISHED_IGNORED = 6
+    FINISHED_COMMON = 7
 
     @staticmethod
     def is_finished(status: "SequenceStatus") -> bool:
@@ -84,6 +85,9 @@ class SequenceStatus(enum.IntEnum):
             # are longer than the model's length cap. Therefore, the stop
             # reason should also be "length" as in OpenAI API.
             finish_reason = "length"
+        elif status == SequenceStatus.FINISHED_COMMON:
+            # NOTE(batchllm): when the shared-prefix part done.
+            finish_reason = "common"
         else:
             finish_reason = None
         return finish_reason
@@ -677,6 +681,8 @@ class SequenceGroup:
         self.prompt_adapter_request = prompt_adapter_request
         self.encoder_seq = encoder_seq
         self.trace_headers = trace_headers
+        self.shared_prefix_request_id = request_id
+
         self.priority = priority
 
         self.cached_request_output = None
@@ -850,6 +856,9 @@ class SequenceGroup:
             if not seq.is_finished():
                 seq.data.update_num_computed_tokens(num_new_computed_tokens)
 
+    def update_shared_prefix_request_id(self, shared_prefix_request_id: str):
+        self.shared_prefix_request_id = shared_prefix_request_id
+
     def get_num_uncomputed_tokens(self) -> int:
         num_uncomputed_tokens = 0
         for seq in self.seqs:
@@ -951,6 +960,9 @@ class SequenceGroupMetadata(
     sampling_params: Optional[SamplingParams]
     block_tables: Dict[int, List[int]]
     do_sample: bool = True
+    shared_prefix_request_id: Optional[str] = None
+    shared_prefix_block_tables: Optional[List[int]] = None
+    shared_prefix_length: Optional[int] = None
     pooling_params: Optional[PoolingParams] = None
     lora_request: Optional[LoRARequest] = None
     computed_block_nums: Optional[List[int]] = None

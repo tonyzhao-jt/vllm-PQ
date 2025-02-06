@@ -1500,6 +1500,9 @@ class SchedulerConfig:
 
     chunked_prefill_enabled: bool = field(init=False)
 
+    # BatchLLM: whether the prefix clustering is enabled
+    enable_ahead_of_prefix_clustering: bool = False
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
