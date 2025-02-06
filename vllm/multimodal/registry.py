@@ -260,6 +260,7 @@ class MultiModalRegistry:
         if self.has_processor(model_config):
             tokenizer = cached_get_tokenizer(
                 model_config.tokenizer,
+                tokenizer_mode=model_config.tokenizer_mode,
                 trust_remote_code=model_config.trust_remote_code,
             )
             processor = self.create_processor(model_config, tokenizer)
@@ -378,6 +379,7 @@ class MultiModalRegistry:
         if self.has_processor(model_config):
             tokenizer = cached_get_tokenizer(
                 model_config.tokenizer,
+                tokenizer_mode=model_config.tokenizer_mode,
                 trust_remote_code=model_config.trust_remote_code,
             )
             processor = self.create_processor(model_config, tokenizer)
