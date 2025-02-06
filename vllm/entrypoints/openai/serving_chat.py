@@ -114,8 +114,8 @@ class OpenAIServingChat(OpenAIServing):
         self,
         request: ChatCompletionRequest,
         raw_request: Optional[Request] = None,
-    ) -> Union[AsyncGenerator[str, None], ChatCompletionResponse,
-               ErrorResponse]:
+    ) -> Tuple[Union[AsyncGenerator[str, None], ChatCompletionResponse,
+               ErrorResponse],Optional[InBandMetrics]]:
         """
         Chat Completion API similar to OpenAI's API.
 
@@ -675,7 +675,7 @@ class OpenAIServingChat(OpenAIServing):
         conversation: List[ConversationMessage],
         tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
-    ) -> Union[ErrorResponse, ChatCompletionResponse]:
+    ) -> Tuple[Union[ErrorResponse, ChatCompletionResponse],Optional[InBandMetrics]]:
 
         created_time = int(time.time())
         final_res: Optional[RequestOutput] = None
@@ -846,11 +846,10 @@ class OpenAIServingChat(OpenAIServing):
             model=model_name,
             choices=choices,
             usage=usage,
-            in_band_metrics= req_inband_metrics,
             prompt_logprobs=final_res.prompt_logprobs,
         )
 
-        return response
+        return response, req_inband_metrics
 
     def _get_top_logprobs(
             self, logprobs: Dict[int, Logprob], top_logprobs: Optional[int],

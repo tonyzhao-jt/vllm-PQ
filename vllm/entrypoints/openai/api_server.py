@@ -390,15 +390,14 @@ async def create_chat_completion(request: ChatCompletionRequest,
         return base(raw_request).create_error_response(
             message="The model does not support Chat Completions API")
 
-    generator = await handler.create_chat_completion(request, raw_request)
+    generator, in_band_metrics = await handler.create_chat_completion(request, raw_request)
 
     if isinstance(generator, ErrorResponse):
         return JSONResponse(content=generator.model_dump(),
                             status_code=generator.code)
 
     elif isinstance(generator, ChatCompletionResponse):
-        header = metrics_header(generator.in_band_metrics)
-        return JSONResponse(content=generator.model_dump(), headers=header)
+        return JSONResponse(content=generator.model_dump(), headers=metrics_header(in_band_metrics))
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
@@ -411,12 +410,14 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         return base(raw_request).create_error_response(
             message="The model does not support Completions API")
 
-    generator = await handler.create_completion(request, raw_request)
+    inband_metrics = None
+    generator, inband_metrics = await handler.create_completion(request, raw_request)
+    # logger.info(f"Generator lenght: {len(generator)}, generator")
     if isinstance(generator, ErrorResponse):
         return JSONResponse(content=generator.model_dump(),
                             status_code=generator.code)
     elif isinstance(generator, CompletionResponse):
-        header = metrics_header(generator.in_band_metrics)
+        header = metrics_header(inband_metrics)
         return JSONResponse(content=generator.model_dump(), headers=header)
 
     return StreamingResponse(content=generator, media_type="text/event-stream")

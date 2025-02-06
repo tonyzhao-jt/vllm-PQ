@@ -92,7 +92,7 @@ def create_orca_header(format: str,
 
 
 def metrics_header(m: InBandMetrics) -> Optional[Mapping[str, str]]:
-    if not m.format:
+    if not m or not m.format:
         return None
     named_metrics: List[Tuple[str, float]] = []
     for metric, val in vars(m).items():

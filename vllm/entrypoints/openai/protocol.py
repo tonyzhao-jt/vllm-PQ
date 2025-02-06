@@ -1101,7 +1101,6 @@ class CompletionResponse(OpenAIBaseModel):
     model: str
     choices: List[CompletionResponseChoice]
     usage: UsageInfo
-    in_band_metrics: InBandMetrics
 
 
 class CompletionResponseStreamChoice(OpenAIBaseModel):
@@ -1246,7 +1245,6 @@ class ChatCompletionResponse(OpenAIBaseModel):
     model: str
     choices: List[ChatCompletionResponseChoice]
     usage: UsageInfo
-    in_band_metrics: InBandMetrics
     prompt_logprobs: Optional[List[Optional[Dict[int, Logprob]]]] = None
 
 
