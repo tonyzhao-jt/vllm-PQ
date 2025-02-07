@@ -565,12 +565,19 @@ class RayDistributedExecutor(DistributedExecutorBase):
             forward_dag = MultiOutputNode(outputs)
 
         return forward_dag.experimental_compile(
+            _submit_timeout=-1,
             enable_asyncio=enable_asyncio,
             _overlap_gpu_communication=envs.
             VLLM_USE_RAY_COMPILED_DAG_OVERLAP_COMM)
 
     def __del__(self):
         self.shutdown()
+
+    def submit_microbatch(self, scheduler_output):
+        if self.forward_dag is None:
+            self.forward_dag = self._compiled_ray_dag()
+        refs = self.forward_dag.execute(scheduler_output)
+        return refs[0]
 
     async def execute_model_async(
             self,
