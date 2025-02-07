@@ -67,8 +67,8 @@ class IterationStats:
         return self.iteration_timestamp - start
 
     def update_from_output(self, output: "EngineCoreOutput",
-                           is_prefilling: bool, prompt_len: int,
-                           req_stats: RequestStateStats):
+                           engine_core_timestamp: float, is_prefilling: bool,
+                           prompt_len: int, req_stats: RequestStateStats):
         if not self.log_stats:
             return
 
@@ -88,8 +88,20 @@ class IterationStats:
 
         req_stats.num_generation_tokens += num_new_generation_tokens
 
+        # Process request-level engine core events
         if output.events is not None:
             self.update_from_events(output.events, is_prefilling, req_stats)
+
+        # Process the batch-level "new tokens" engine core event
+        if is_prefilling:
+            prefill_interval = engine_core_timestamp - req_stats.scheduled_ts
+            self.prefill_times_iter.append(prefill_interval)
+            req_stats.first_token_ts = engine_core_timestamp
+        else:
+            tpot = engine_core_timestamp - req_stats.last_token_ts
+            self.time_per_output_tokens_iter.append(tpot)
+
+        req_stats.last_token_ts = engine_core_timestamp
 
     def update_from_events(self, events: List["EngineCoreEvent"],
                            is_prefilling: bool, req_stats: RequestStateStats):
@@ -102,15 +114,6 @@ class IterationStats:
                 queued_interval = event.timestamp - req_stats.queued_ts
                 self.queue_times_iter.append(queued_interval)
                 req_stats.scheduled_ts = event.timestamp
-            elif event.type == EngineCoreEventType.NEW_TOKENS:
-                if is_prefilling:
-                    prefill_interval = event.timestamp - req_stats.scheduled_ts
-                    self.prefill_times_iter.append(prefill_interval)
-                    req_stats.first_token_ts = event.timestamp
-                else:
-                    tpot = event.timestamp - req_stats.last_token_ts
-                    self.time_per_output_tokens_iter.append(tpot)
-                req_stats.last_token_ts = event.timestamp
 
     def update_from_finished_request(self, finish_reason: "FinishReason",
                                      request_output: "RequestOutput",

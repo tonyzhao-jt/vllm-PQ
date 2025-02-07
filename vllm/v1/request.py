@@ -94,11 +94,6 @@ class Request:
             EngineCoreEvent.new_event(EngineCoreEventType.SCHEDULED,
                                       timestamp))
 
-    def new_tokens(self, timestamp: Optional[float] = None) -> None:
-        self.events.append(
-            EngineCoreEvent.new_event(EngineCoreEventType.NEW_TOKENS,
-                                      timestamp))
-
     def take_events(self) -> Optional[List[EngineCoreEvent]]:
         if not self.events:
             return None

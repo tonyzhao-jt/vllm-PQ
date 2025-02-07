@@ -106,6 +106,7 @@ class OutputProcessor:
     def process_outputs(
         self,
         engine_core_outputs: List[EngineCoreOutput],
+        engine_core_timestamp: Optional[float] = None,
         iteration_stats: Optional[IterationStats] = None,
     ) -> OutputProcessorOutput:
         """
@@ -148,7 +149,9 @@ class OutputProcessor:
 
             # 1) Compute stats for this iteration.
             if iteration_stats is not None:
+                assert engine_core_timestamp is not None
                 iteration_stats.update_from_output(engine_core_output,
+                                                   engine_core_timestamp,
                                                    req_state.is_prefilling,
                                                    req_state.prompt_len,
                                                    req_state.stats)

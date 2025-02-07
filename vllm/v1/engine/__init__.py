@@ -41,7 +41,6 @@ class FinishReason(enum.IntEnum):
 
 class EngineCoreEventType(enum.IntEnum):
     """The type of engine core request event."""
-    NEW_TOKENS = 0
     QUEUED = 1
     SCHEDULED = 2
 
@@ -112,6 +111,10 @@ class EngineCoreOutputs(
     # [num_reqs]
     outputs: List[EngineCoreOutput]
     scheduler_stats: SchedulerStats
+    timestamp: float = 0.0
+
+    def __post_init__(self):
+        self.timestamp = time.monotonic()
 
 
 @dataclass

@@ -419,8 +419,6 @@ class Scheduler:
         new_running: List[Request] = []
         outputs: List[EngineCoreOutput] = []
 
-        output_timestamp = time.monotonic()
-
         # NOTE(woosuk): As len(self.running) can be up to 1K or more, the below
         # loop can be a performance bottleneck. We should do our best to avoid
         # expensive operations inside the loop.
@@ -465,8 +463,6 @@ class Scheduler:
                 stopped = self._check_stop(request)
                 if stopped:
                     self._free_request(request)
-
-                request.new_tokens(output_timestamp)
 
                 # Add EngineCoreOutput for this Request.
                 output = EngineCoreOutput(
