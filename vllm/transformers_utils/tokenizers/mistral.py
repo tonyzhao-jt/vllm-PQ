@@ -233,6 +233,7 @@ class MistralTokenizer:
         self,
         prompt: Union[str, List[str], List[int]],
         add_special_tokens: bool = False,
+        split_special_tokens: bool = False,
         truncation: bool = False,
         max_length: Optional[int] = None,
     ):
