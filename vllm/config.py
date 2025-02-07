@@ -712,6 +712,19 @@ class ModelConfig:
                 " must be divisible by tensor parallel size "
                 f"({tensor_parallel_size}).")
 
+        expert_parallel_size = parallel_config.expert_parallel_size
+        if expert_parallel_size > 1:
+            num_experts = getattr(self.hf_text_config, "n_routed_experts", 0)
+            if num_experts < 1:
+                raise ValueError(
+                    "Number of experts in the model must be greater than 0 "
+                    "when using expert parallelism.")
+            if tensor_parallel_size % expert_parallel_size != 0:
+                raise ValueError(
+                    f"Tensor parallel group size ({tensor_parallel_size}) "
+                    f"is not divisible by expert parallelism size "
+                    f"({expert_parallel_size})")
+
         pipeline_parallel_size = parallel_config.pipeline_parallel_size
         if pipeline_parallel_size > 1:
             architectures = getattr(self.hf_config, "architectures", [])
@@ -845,6 +858,11 @@ class ModelConfig:
                                 parallel_config: "ParallelConfig") -> int:
         num_heads = getattr(self.hf_text_config, "num_attention_heads", 0)
         return num_heads // parallel_config.tensor_parallel_size
+
+    def get_num_routed_experts(self, parallel_config: "ParallelConfig") -> int:
+        num_routed_experts = getattr(self.hf_text_config, "n_routed_experts",
+                                     0)
+        return num_routed_experts // parallel_config.expert_parallel_size
 
     def get_layers_start_end_indices(
             self, parallel_config: "ParallelConfig") -> Tuple[int, int]:
@@ -1305,6 +1323,7 @@ class ParallelConfig:
 
     pipeline_parallel_size: int = 1  # Number of pipeline parallel groups.
     tensor_parallel_size: int = 1  # Number of tensor parallel groups.
+    expert_parallel_size: int = 1  # Number of expert parallel groups.
 
     # Maximum number of multiple batches
     # when load model sequentially. To avoid RAM OOM when using tensor
@@ -1353,9 +1372,18 @@ class ParallelConfig:
         factors: List[Any] = []
         factors.append(self.pipeline_parallel_size)
         factors.append(self.tensor_parallel_size)
+        factors.append(self.expert_parallel_size)
         return hashlib.sha256(str(factors).encode()).hexdigest()
 
     def __post_init__(self) -> None:
+        # MoE layers will use the specified number of EPs, with TP
+        # of tensor_parallel_size. Non-MoE layers will use TP of size
+        # tensor_parallel_size * expert_parallel_size. As such, the size
+        # of the tensor parallel group is set to the product of the
+        # user-specified tensor parallel and expert parallel sizes,
+        # prioritizing the non-MoE layer's TP size.
+        self.tensor_parallel_size *= self.expert_parallel_size
+
         self.world_size = self.pipeline_parallel_size * \
             self.tensor_parallel_size
 
@@ -3355,6 +3383,7 @@ class VllmConfig:
             f"load_format={self.load_config.load_format}, "
             f"tensor_parallel_size={self.parallel_config.tensor_parallel_size},"
             f" pipeline_parallel_size={self.parallel_config.pipeline_parallel_size}, "  # noqa
+            f" expert_parallel_size={self.parallel_config.expert_parallel_size},"  # noqa
             f"disable_custom_all_reduce={self.parallel_config.disable_custom_all_reduce}, "  # noqa
             f"quantization={self.model_config.quantization}, "
             f"enforce_eager={self.model_config.enforce_eager}, "

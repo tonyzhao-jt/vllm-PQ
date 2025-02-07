@@ -120,95 +120,100 @@ def fused_moe_kernel_gptq_awq(
     offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
     token_mask = offs_token < num_valid_tokens
 
-    offs_bn = (pid_n * BLOCK_SIZE_N +
-               tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
-    offs_k = tl.arange(0, BLOCK_SIZE_K)
-    a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
-                      offs_k[None, :] * stride_ak)
-
-    off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
-
-    if use_int4_w4a16:
-        b_ptrs = b_ptr + off_experts * stride_be + \
-            (offs_k[:, None] // 2) * stride_bk + offs_bn[None, :] * stride_bn
-        b_shifter = (offs_k[:, None] % 2) * 4
-    elif use_int8_w8a16:
-        b_ptrs = b_ptr + off_experts * stride_be + \
-            offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn
-
-    if not has_zp and use_int4_w4a16:
-        b_zp_num = 8
-    if not has_zp and use_int8_w8a16:
-        b_zp_num = 128
-    elif has_zp and use_int4_w4a16:
-        b_zp_shifter = (offs_bn[None, :] % 2) * 4
-
-    # -----------------------------------------------------------
-    # Iterate to compute a block of the C matrix.
     # We accumulate into a `[BLOCK_SIZE_M, BLOCK_SIZE_N]` block
     # of fp32 values for higher accuracy.
     # `accumulator` will be converted back to fp16 after the loop.
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-        # Load the next block of A and B, generate a mask by checking the
-        # K dimension.
+    off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
+    if off_experts != -1:
 
-        if not block_k_diviable:
-            k_mask = offs_k[:, None] < K - k * BLOCK_SIZE_K
-            k_other = 0.0
-        else:
-            k_mask = None
-            k_other = None
+        offs_bn = (pid_n * BLOCK_SIZE_N +
+                   tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
+        offs_k = tl.arange(0, BLOCK_SIZE_K)
+        a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
+                          offs_k[None, :] * stride_ak)
 
-        a = tl.load(a_ptrs,
-                    mask=token_mask[:, None] &
-                    (offs_k[None, :] < K - k * BLOCK_SIZE_K),
-                    other=0.0)
-        b = tl.load(b_ptrs)
         if use_int4_w4a16:
-            b = (b >> b_shifter) & 0xF
+            b_ptrs = b_ptr + off_experts * stride_be + \
+                (offs_k[:, None] // 2) * stride_bk + offs_bn[None, :] * \
+                    stride_bn
+            b_shifter = (offs_k[:, None] % 2) * 4
+        elif use_int8_w8a16:
+            b_ptrs = b_ptr + off_experts * stride_be + \
+                offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn
 
-        b_scale_ptrs = b_scale_ptr + off_experts * stride_bse + \
-            offs_bn[None, :] * stride_bsn + \
-            ((offs_k[:, None] + BLOCK_SIZE_K * k) // group_size) * stride_bsk
-        b_scale = tl.load(b_scale_ptrs, mask=k_mask, other=k_other)
-        b_scale = b_scale.to(tl.float32)
+        if not has_zp and use_int4_w4a16:
+            b_zp_num = 8
+        if not has_zp and use_int8_w8a16:
+            b_zp_num = 128
+        elif has_zp and use_int4_w4a16:
+            b_zp_shifter = (offs_bn[None, :] % 2) * 4
 
-        if has_zp and use_int4_w4a16:
-            offs_k_true = (offs_k[:, None] + BLOCK_SIZE_K * k) // group_size
-            b_zp_ptrs = b_zp_ptr + off_experts * stride_bze + \
-                (offs_bn[None, :] // 2) * stride_bzn + \
-                offs_k_true * stride_bzk
-            b_zp = tl.load(b_zp_ptrs, mask=k_mask, other=k_other)
-            b_zp = ((b_zp >> b_zp_shifter) & 0xF)
-            b_zp = b_zp.to(tl.float32)
-        elif has_zp and use_int8_w8a16:
-            offs_k_true = (offs_k[:, None] + BLOCK_SIZE_K * k) // group_size
-            b_zp_ptrs = b_zp_ptr + off_experts * stride_bze + \
-                offs_bn[None, :] * stride_bzn + \
-                offs_k_true * stride_bzk
-            b_zp = tl.load(b_zp_ptrs, mask=k_mask, other=k_other)
-            b_zp = b_zp.to(tl.float32)
+        # -----------------------------------------------------------
+        # Iterate to compute a block of the C matrix.
+        for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+            # Load the next block of A and B, generate a mask by checking the
+            # K dimension.
 
-        # We accumulate along the K dimension.
-        if has_zp:
-            b = ((b.to(tl.float32) - b_zp) * b_scale).to(compute_type)
-        else:
-            b = ((b.to(tl.float32) - b_zp_num) * b_scale).to(compute_type)
-        accumulator = tl.dot(a, b, acc=accumulator)
+            if not block_k_diviable:
+                k_mask = offs_k[:, None] < K - k * BLOCK_SIZE_K
+                k_other = 0.0
+            else:
+                k_mask = None
+                k_other = None
 
-        # Advance the ptrs to the next K block.
-        a_ptrs += BLOCK_SIZE_K * stride_ak
-        if use_int4_w4a16:
-            b_ptrs += (BLOCK_SIZE_K // 2) * stride_bk
-        else:
-            b_ptrs += BLOCK_SIZE_K * stride_bk
+            a = tl.load(a_ptrs,
+                        mask=token_mask[:, None] &
+                        (offs_k[None, :] < K - k * BLOCK_SIZE_K),
+                        other=0.0)
+            b = tl.load(b_ptrs)
+            if use_int4_w4a16:
+                b = (b >> b_shifter) & 0xF
 
-    if MUL_ROUTED_WEIGHT:
-        moe_weight = tl.load(topk_weights_ptr + offs_token,
-                             mask=token_mask,
-                             other=0)
-        accumulator = accumulator * moe_weight[:, None]
+            b_scale_ptrs = b_scale_ptr + off_experts * stride_bse + \
+                offs_bn[None, :] * stride_bsn + \
+                ((offs_k[:, None] + BLOCK_SIZE_K * k) // group_size) * \
+                    stride_bsk
+            b_scale = tl.load(b_scale_ptrs, mask=k_mask, other=k_other)
+            b_scale = b_scale.to(tl.float32)
+
+            if has_zp and use_int4_w4a16:
+                offs_k_true = (offs_k[:, None] +
+                               BLOCK_SIZE_K * k) // group_size
+                b_zp_ptrs = b_zp_ptr + off_experts * stride_bze + \
+                    (offs_bn[None, :] // 2) * stride_bzn + \
+                    offs_k_true * stride_bzk
+                b_zp = tl.load(b_zp_ptrs, mask=k_mask, other=k_other)
+                b_zp = ((b_zp >> b_zp_shifter) & 0xF)
+                b_zp = b_zp.to(tl.float32)
+            elif has_zp and use_int8_w8a16:
+                offs_k_true = (offs_k[:, None] +
+                               BLOCK_SIZE_K * k) // group_size
+                b_zp_ptrs = b_zp_ptr + off_experts * stride_bze + \
+                    offs_bn[None, :] * stride_bzn + \
+                    offs_k_true * stride_bzk
+                b_zp = tl.load(b_zp_ptrs, mask=k_mask, other=k_other)
+                b_zp = b_zp.to(tl.float32)
+
+            # We accumulate along the K dimension.
+            if has_zp:
+                b = ((b.to(tl.float32) - b_zp) * b_scale).to(compute_type)
+            else:
+                b = ((b.to(tl.float32) - b_zp_num) * b_scale).to(compute_type)
+            accumulator = tl.dot(a, b, acc=accumulator)
+
+            # Advance the ptrs to the next K block.
+            a_ptrs += BLOCK_SIZE_K * stride_ak
+            if use_int4_w4a16:
+                b_ptrs += (BLOCK_SIZE_K // 2) * stride_bk
+            else:
+                b_ptrs += BLOCK_SIZE_K * stride_bk
+
+        if MUL_ROUTED_WEIGHT:
+            moe_weight = tl.load(topk_weights_ptr + offs_token,
+                                 mask=token_mask,
+                                 other=0)
+            accumulator = accumulator * moe_weight[:, None]
 
     accumulator = accumulator.to(compute_type)
     # -----------------------------------------------------------
@@ -319,83 +324,80 @@ def fused_moe_kernel(
     offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
     token_mask = offs_token < num_valid_tokens
 
-    offs_bn = (pid_n * BLOCK_SIZE_N +
-               tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
-    offs_k = tl.arange(0, BLOCK_SIZE_K)
-    a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
-                      offs_k[None, :] * stride_ak)
-
-    off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
-    b_ptrs = b_ptr + off_experts * stride_be + (offs_k[:, None] * stride_bk +
-                                                offs_bn[None, :] * stride_bn)
-    if use_int8_w8a16:
-        b_scale_ptrs = b_scale_ptr + off_experts * stride_bse + offs_bn[
-            None, :] * stride_bsn
-        b_scale = tl.load(b_scale_ptrs)
-
-    if use_fp8_w8a8:
-        if group_k > 0 and group_n > 0:
-            a_scale_ptrs = a_scale_ptr + (offs_token // top_k) * stride_asm
-            offs_bsn = offs_bn // group_n
-            b_scale_ptrs = (b_scale_ptr + off_experts * stride_bse +
-                            offs_bsn * stride_bsn)
-        else:
-            a_scale = tl.load(a_scale_ptr)
-            b_scale = tl.load(b_scale_ptr + off_experts)
-
-    # -----------------------------------------------------------
-    # Iterate to compute a block of the C matrix.
     # We accumulate into a `[BLOCK_SIZE_M, BLOCK_SIZE_N]` block
     # of fp32 values for higher accuracy.
     # `accumulator` will be converted back to fp16 after the loop.
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
+    if off_experts != -1:
+        offs_bn = (pid_n * BLOCK_SIZE_N +
+                   tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
+        offs_k = tl.arange(0, BLOCK_SIZE_K)
+        a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
+                          offs_k[None, :] * stride_ak)
 
-    for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
-        # Load the next block of A and B, generate a mask by checking the
-        # K dimension.
-        a = tl.load(a_ptrs,
-                    mask=token_mask[:, None] &
-                    (offs_k[None, :] < K - k * BLOCK_SIZE_K),
-                    other=0.0)
-        b = tl.load(b_ptrs,
-                    mask=offs_k[:, None] < K - k * BLOCK_SIZE_K,
-                    other=0.0)
-        # We accumulate along the K dimension.
+        b_ptrs = b_ptr + off_experts * stride_be + (
+            offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
         if use_int8_w8a16:
-            accumulator = tl.dot(a, b.to(compute_type), acc=accumulator)
-        elif use_fp8_w8a8:
+            b_scale_ptrs = b_scale_ptr + off_experts * stride_bse + offs_bn[
+                None, :] * stride_bsn
+            b_scale = tl.load(b_scale_ptrs)
+
+        if use_fp8_w8a8:
             if group_k > 0 and group_n > 0:
-                k_start = k * BLOCK_SIZE_K
-                offs_ks = k_start // group_k
-                a_scale = tl.load(a_scale_ptrs + offs_ks * stride_ask,
-                                  mask=token_mask,
-                                  other=0.0)
-                b_scale = tl.load(b_scale_ptrs + offs_ks * stride_bsk)
-
-                accumulator += tl.dot(a, b) * a_scale[:,
-                                                      None] * b_scale[None, :]
+                a_scale_ptrs = a_scale_ptr + (offs_token // top_k) * stride_asm
+                offs_bsn = offs_bn // group_n
+                b_scale_ptrs = (b_scale_ptr + off_experts * stride_bse +
+                                offs_bsn * stride_bsn)
             else:
-                accumulator = tl.dot(a, b, acc=accumulator)
-        else:
-            accumulator += tl.dot(a, b)
-        # Advance the ptrs to the next K block.
-        a_ptrs += BLOCK_SIZE_K * stride_ak
-        b_ptrs += BLOCK_SIZE_K * stride_bk
+                a_scale = tl.load(a_scale_ptr)
+                b_scale = tl.load(b_scale_ptr + off_experts)
 
-    if MUL_ROUTED_WEIGHT:
-        moe_weight = tl.load(topk_weights_ptr + offs_token,
-                             mask=token_mask,
-                             other=0)
-        accumulator = accumulator * moe_weight[:, None]
-    if use_int8_w8a16:
-        accumulator = (accumulator * b_scale).to(compute_type)
-    elif use_fp8_w8a8:
-        if group_k > 0 and group_n > 0:
-            accumulator = accumulator.to(compute_type)
-        else:
-            accumulator = (accumulator * a_scale * b_scale).to(compute_type)
-    else:
-        accumulator = accumulator.to(compute_type)
+        # -----------------------------------------------------------
+        # Iterate to compute a block of the C matrix.
+        for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
+            # Load the next block of A and B, generate a mask by checking the
+            # K dimension.
+            a = tl.load(a_ptrs,
+                        mask=token_mask[:, None] &
+                        (offs_k[None, :] < K - k * BLOCK_SIZE_K),
+                        other=0.0)
+            b = tl.load(b_ptrs,
+                        mask=offs_k[:, None] < K - k * BLOCK_SIZE_K,
+                        other=0.0)
+            # We accumulate along the K dimension.
+            if use_int8_w8a16:
+                accumulator = tl.dot(a, b.to(compute_type), acc=accumulator)
+            elif use_fp8_w8a8:
+                if group_k > 0 and group_n > 0:
+                    k_start = k * BLOCK_SIZE_K
+                    offs_ks = k_start // group_k
+                    a_scale = tl.load(a_scale_ptrs + offs_ks * stride_ask,
+                                      mask=token_mask,
+                                      other=0.0)
+                    b_scale = tl.load(b_scale_ptrs + offs_ks * stride_bsk)
+
+                    accumulator += tl.dot(
+                        a, b) * a_scale[:, None] * b_scale[None, :]
+                else:
+                    accumulator = tl.dot(a, b, acc=accumulator)
+            else:
+                accumulator += tl.dot(a, b)
+            # Advance the ptrs to the next K block.
+            a_ptrs += BLOCK_SIZE_K * stride_ak
+            b_ptrs += BLOCK_SIZE_K * stride_bk
+
+        if MUL_ROUTED_WEIGHT:
+            moe_weight = tl.load(topk_weights_ptr + offs_token,
+                                 mask=token_mask,
+                                 other=0)
+            accumulator = accumulator * moe_weight[:, None]
+        if use_int8_w8a16:
+            accumulator = (accumulator * b_scale)
+        elif use_fp8_w8a8 and not (group_k > 0 and group_n > 0):
+            accumulator = (accumulator * a_scale * b_scale)
+
+    accumulator = accumulator.to(compute_type)
     # -----------------------------------------------------------
     # Write back the block of the output
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
@@ -544,8 +546,11 @@ def moe_align_block_size_triton(
 
 
 def moe_align_block_size(
-        topk_ids: torch.Tensor, block_size: int,
-        num_experts: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    topk_ids: torch.Tensor,
+    block_size: int,
+    num_experts: int,
+    expert_map: torch.Tensor = None
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Aligns the token distribution across experts to be compatible with block
     size for matrix multiplication.
@@ -555,6 +560,9 @@ def moe_align_block_size(
         top-k expert indices for each token.
     - block_size: The block size used in block matrix multiplication.
     - num_experts: The total number of experts.
+    - expert_map: A tensor of shape [num_experts] that maps the expert index
+        from the global space to the local expert index space of the current
+        expert parallel shard.
 
     Returns:
     - sorted_token_ids: A tensor containing the sorted token indices according
@@ -589,7 +597,7 @@ def moe_align_block_size(
                              device=topk_ids.device)
     sorted_ids.fill_(topk_ids.numel())
     max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
-    expert_ids = torch.empty((max_num_m_blocks, ),
+    expert_ids = torch.zeros((max_num_m_blocks, ),
                              dtype=torch.int32,
                              device=topk_ids.device)
     num_tokens_post_pad = torch.empty((1),
@@ -617,6 +625,9 @@ def moe_align_block_size(
     else:
         ops.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
                                  expert_ids, num_tokens_post_pad)
+    if expert_map is not None:
+        expert_ids = expert_map[expert_ids]
+
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 
@@ -997,6 +1008,8 @@ def inplace_fused_experts(hidden_states: torch.Tensor,
                           use_fp8_w8a8: bool = False,
                           use_int8_w8a16: bool = False,
                           use_int4_w4a16: bool = False,
+                          global_num_experts: int = -1,
+                          expert_map: Optional[torch.Tensor] = None,
                           w1_scale: Optional[torch.Tensor] = None,
                           w2_scale: Optional[torch.Tensor] = None,
                           w1_zp: Optional[torch.Tensor] = None,
@@ -1005,8 +1018,9 @@ def inplace_fused_experts(hidden_states: torch.Tensor,
                           a2_scale: Optional[torch.Tensor] = None,
                           block_shape: Optional[List[int]] = None) -> None:
     fused_experts_impl(hidden_states, w1, w2, topk_weights, topk_ids, True,
-                       use_fp8_w8a8, use_int8_w8a16, use_int4_w4a16, w1_scale,
-                       w2_scale, w1_zp, w2_zp, a1_scale, a2_scale, block_shape)
+                       use_fp8_w8a8, use_int8_w8a16, use_int4_w4a16,
+                       global_num_experts, expert_map, w1_scale, w2_scale,
+                       a1_scale, a2_scale, block_shape)
 
 
 def inplace_fused_experts_fake(
@@ -1018,6 +1032,8 @@ def inplace_fused_experts_fake(
         use_fp8_w8a8: bool = False,
         use_int8_w8a16: bool = False,
         use_int4_w4a16: bool = False,
+        global_num_experts: int = -1,
+        expert_map: Optional[torch.Tensor] = None,
         w1_scale: Optional[torch.Tensor] = None,
         w2_scale: Optional[torch.Tensor] = None,
         w1_zp: Optional[torch.Tensor] = None,
@@ -1045,6 +1061,8 @@ def outplace_fused_experts(
         use_fp8_w8a8: bool = False,
         use_int8_w8a16: bool = False,
         use_int4_w4a16: bool = False,
+        global_num_experts: int = -1,
+        expert_map: Optional[torch.Tensor] = None,
         w1_scale: Optional[torch.Tensor] = None,
         w2_scale: Optional[torch.Tensor] = None,
         w1_zp: Optional[torch.Tensor] = None,
@@ -1054,8 +1072,9 @@ def outplace_fused_experts(
         block_shape: Optional[List[int]] = None) -> torch.Tensor:
     return fused_experts_impl(hidden_states, w1, w2, topk_weights, topk_ids,
                               False, use_fp8_w8a8, use_int8_w8a16,
-                              use_int4_w4a16, w1_scale, w2_scale, w1_zp, w2_zp,
-                              a1_scale, a2_scale, block_shape)
+                              use_int4_w4a16, global_num_experts, expert_map,
+                              w1_scale, w2_scale, w1_zp, w2_zp, a1_scale,
+                              a2_scale, block_shape)
 
 
 def outplace_fused_experts_fake(
@@ -1067,6 +1086,8 @@ def outplace_fused_experts_fake(
         use_fp8_w8a8: bool = False,
         use_int8_w8a16: bool = False,
         use_int4_w4a16: bool = False,
+        global_num_experts: int = -1,
+        expert_map: Optional[torch.Tensor] = None,
         w1_scale: Optional[torch.Tensor] = None,
         w2_scale: Optional[torch.Tensor] = None,
         w1_zp: Optional[torch.Tensor] = None,
@@ -1094,26 +1115,27 @@ def fused_experts(hidden_states: torch.Tensor,
                   use_fp8_w8a8: bool = False,
                   use_int8_w8a16: bool = False,
                   use_int4_w4a16: bool = False,
+                  global_num_experts: int = -1,
+                  expert_map: Optional[torch.Tensor] = None,
                   w1_scale: Optional[torch.Tensor] = None,
                   w2_scale: Optional[torch.Tensor] = None,
                   w1_zp: Optional[torch.Tensor] = None,
                   w2_zp: Optional[torch.Tensor] = None,
                   a1_scale: Optional[torch.Tensor] = None,
                   a2_scale: Optional[torch.Tensor] = None,
-                  block_shape: Optional[List[int]] = None):
+                  block_shape: Optional[List[int]] = None) -> torch.Tensor:
+
     if inplace:
-        torch.ops.vllm.inplace_fused_experts(hidden_states, w1, w2,
-                                             topk_weights, topk_ids,
-                                             use_fp8_w8a8, use_int8_w8a16,
-                                             use_int4_w4a16, w1_scale,
-                                             w2_scale, w1_zp, w2_zp, a1_scale,
-                                             a2_scale, block_shape)
+        torch.ops.vllm.inplace_fused_experts(
+            hidden_states, w1, w2, topk_weights, topk_ids, use_fp8_w8a8,
+            use_int8_w8a16, use_int4_w4a16, global_num_experts, expert_map,
+            w1_scale, w2_scale, w1_zp, w2_zp, a1_scale, a2_scale, block_shape)
         return hidden_states
     else:
         return torch.ops.vllm.outplace_fused_experts(
             hidden_states, w1, w2, topk_weights, topk_ids, use_fp8_w8a8,
-            use_int8_w8a16, use_int4_w4a16, w1_scale, w2_scale, w1_zp, w2_zp,
-            a1_scale, a2_scale, block_shape)
+            use_int8_w8a16, use_int4_w4a16, global_num_experts, expert_map,
+            w1_scale, w2_scale, w1_zp, w2_zp, a1_scale, a2_scale, block_shape)
 
 
 def fused_experts_impl(hidden_states: torch.Tensor,
@@ -1125,6 +1147,8 @@ def fused_experts_impl(hidden_states: torch.Tensor,
                        use_fp8_w8a8: bool = False,
                        use_int8_w8a16: bool = False,
                        use_int4_w4a16: bool = False,
+                       global_num_experts: int = -1,
+                       expert_map: Optional[torch.Tensor] = None,
                        w1_scale: Optional[torch.Tensor] = None,
                        w2_scale: Optional[torch.Tensor] = None,
                        w1_zp: Optional[torch.Tensor] = None,
@@ -1149,6 +1173,9 @@ def fused_experts_impl(hidden_states: torch.Tensor,
 
     num_tokens, _ = hidden_states.shape
     E, N, _ = w1.shape
+    if global_num_experts == -1:
+        global_num_experts = E
+    top_k_num = topk_ids.shape[1]
     # We execute the fused_moe kernel in chunks to circumvent this issue:
     # https://github.com/vllm-project/vllm/issues/5938
     CHUNK_SIZE = envs.VLLM_FUSED_MOE_CHUNK_SIZE
@@ -1162,20 +1189,20 @@ def fused_experts_impl(hidden_states: torch.Tensor,
         try_get_optimal_moe_config,
         w1.shape,
         w2.shape,
-        topk_ids.shape[1],
+        top_k_num,
         config_dtype,
         block_shape=block_shape,
     )
 
     config = get_config_func(M)
 
-    intermediate_cache1 = torch.empty((M, topk_ids.shape[1], N),
+    intermediate_cache1 = torch.empty((M, top_k_num, N),
                                       device=hidden_states.device,
                                       dtype=hidden_states.dtype)
-    intermediate_cache2 = torch.empty((M * topk_ids.shape[1], N // 2),
+    intermediate_cache2 = torch.empty((M * top_k_num, N // 2),
                                       device=hidden_states.device,
                                       dtype=hidden_states.dtype)
-    intermediate_cache3 = torch.empty((M, topk_ids.shape[1], w2.shape[1]),
+    intermediate_cache3 = torch.empty((M, top_k_num, w2.shape[1]),
                                       device=hidden_states.device,
                                       dtype=hidden_states.dtype)
 
@@ -1217,7 +1244,8 @@ def fused_experts_impl(hidden_states: torch.Tensor,
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-            moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'], E))
+            moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
+                                 global_num_experts, expert_map))
 
         invoke_fused_moe_kernel(curr_hidden_states,
                                 w1,
@@ -1231,7 +1259,7 @@ def fused_experts_impl(hidden_states: torch.Tensor,
                                 expert_ids,
                                 num_tokens_post_padded,
                                 False,
-                                topk_ids.shape[1],
+                                top_k_num,
                                 config,
                                 compute_type=compute_type,
                                 use_fp8_w8a8=use_fp8_w8a8,
@@ -1282,6 +1310,8 @@ def fused_moe(
     use_fp8_w8a8: bool = False,
     use_int8_w8a16: bool = False,
     use_int4_w4a16: bool = False,
+    global_num_experts: int = -1,
+    expert_map: Optional[torch.Tensor] = None,
     w1_scale: Optional[torch.Tensor] = None,
     w2_scale: Optional[torch.Tensor] = None,
     w1_zp: Optional[torch.Tensor] = None,
@@ -1316,6 +1346,11 @@ def fused_moe(
     - use_int4_w4a16 (bool): If True, use matmul of int4 weight and bf16/fp16
         activation to compute the inner products for w1 and w2.
         Defaults to False.
+    - global_num_experts (int): The total number of experts in the global
+        expert space.
+    - expert_map (Optional[torch.Tensor]):  A tensor mapping expert indices 
+        from the global expert space to the local expert space of the expert 
+        parallel shard.
     - w1_scale (Optional[torch.Tensor]): Optional scale to be used for
         w1.
     - w2_scale (Optional[torch.Tensor]): Optional scale to be used for
@@ -1354,6 +1389,8 @@ def fused_moe(
                          use_fp8_w8a8=use_fp8_w8a8,
                          use_int8_w8a16=use_int8_w8a16,
                          use_int4_w4a16=use_int4_w4a16,
+                         global_num_experts=global_num_experts,
+                         expert_map=expert_map,
                          w1_scale=w1_scale,
                          w2_scale=w2_scale,
                          w1_zp=w1_zp,

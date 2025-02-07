@@ -6,7 +6,8 @@ from typing import Callable, List, Optional, Tuple
 
 import torch
 
-from vllm.distributed import (get_tensor_model_parallel_rank,
+from vllm.distributed import (get_expert_model_parallel_size,
+                              get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_reduce)
 from vllm.logger import init_logger
@@ -111,6 +112,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         renormalize: bool,
         use_grouped_topk: bool = False,
+        global_num_experts: int = -1,
+        expert_map: Optional[torch.Tensor] = None,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         custom_routing_function: Optional[Callable] = None,
@@ -122,6 +125,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                             router_logits=router_logits,
                             top_k=top_k,
                             renormalize=renormalize,
+                            global_num_experts=global_num_experts,
+                            expert_map=expert_map,
                             use_grouped_topk=use_grouped_topk,
                             topk_group=topk_group,
                             num_expert_group=num_expert_group,
@@ -137,6 +142,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         router_logits: torch.Tensor,
         renormalize: bool,
+        global_num_experts: int = -1,
+        expert_map: Optional[torch.Tensor] = None,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         custom_routing_function: Optional[Callable] = None,
@@ -160,7 +167,9 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                              w2=layer.w2_weight,
                              topk_weights=topk_weights,
                              topk_ids=topk_ids,
-                             inplace=True)
+                             inplace=True,
+                             global_num_experts=global_num_experts,
+                             expert_map=expert_map)
 
     def forward_cpu(
         self,
@@ -170,6 +179,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         router_logits: torch.Tensor,
         renormalize: bool,
+        global_num_experts: int = -1,
+        expert_map: Optional[torch.Tensor] = None,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         custom_routing_function: Optional[Callable] = None,
@@ -194,6 +205,8 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         top_k: int,
         router_logits: torch.Tensor,
         renormalize: bool,
+        global_num_experts: int = -1,
+        expert_map: Optional[torch.Tensor] = None,
         topk_group: Optional[int] = None,
         num_expert_group: Optional[int] = None,
         custom_routing_function: Optional[Callable] = None,
@@ -255,6 +268,7 @@ class FusedMoE(torch.nn.Module):
         topk_group: Optional[int] = None,
         quant_config: Optional[QuantizationConfig] = None,
         tp_size: Optional[int] = None,
+        ep_size: Optional[int] = None,
         prefix: str = "",
         custom_routing_function: Optional[Callable] = None,
         scoring_func: str = "softmax",
@@ -267,8 +281,12 @@ class FusedMoE(torch.nn.Module):
 
         self.tp_size = (tp_size if tp_size is not None else
                         get_tensor_model_parallel_world_size())
+        self.ep_size = (ep_size if ep_size is not None else
+                        get_expert_model_parallel_size())
+        assert self.tp_size % self.ep_size == 0
+        self.tp_size = self.tp_size // self.ep_size
         self.top_k = top_k
-        self.num_experts = num_experts
+        self.global_num_experts = num_experts
         assert intermediate_size % self.tp_size == 0
         self.intermediate_size_per_partition = intermediate_size // self.tp_size
         self.reduce_results = reduce_results
@@ -282,6 +300,22 @@ class FusedMoE(torch.nn.Module):
         self.scoring_func = scoring_func
         self.e_score_correction_bias = e_score_correction_bias
 
+        ep_rank = get_tensor_model_parallel_rank() // self.tp_size
+        # Create a tensor of size num_experts filled with -1
+        self.expert_map = torch.full((num_experts, ), -1, dtype=torch.int32)
+        # Create a expert map for the local experts
+        local_num_experts = num_experts // self.ep_size
+        if ep_rank < (self.ep_size - 1):
+            # Each rank gets local_num_experts experts, except the last rank.
+            self.expert_map[ep_rank * local_num_experts:
+                            (ep_rank + 1) * local_num_experts] = \
+                torch.arange(0, local_num_experts,dtype=torch.int32)
+        else:
+            # All remaining experts are assigned to the last rank.
+            local_num_experts = num_experts - ep_rank * local_num_experts
+            self.expert_map[-local_num_experts:] = \
+                torch.arange(0, local_num_experts,dtype=torch.int32)
+
         if self.scoring_func != "softmax" and not self.use_grouped_topk:
             raise ValueError("Only softmax scoring function is supported for "
                              "non-grouped topk.")
@@ -294,7 +328,7 @@ class FusedMoE(torch.nn.Module):
         assert self.quant_method is not None
 
         moe_quant_params = {
-            "num_experts": num_experts,
+            "num_experts": torch.sum(self.expert_map != -1),
             "hidden_size": hidden_size,
             "intermediate_size_per_partition":
             self.intermediate_size_per_partition,
@@ -423,9 +457,16 @@ class FusedMoE(torch.nn.Module):
             assert shard_id in ("w1", "w3")
             expert_data.copy_(loaded_weight)
 
+    def _map_global_expert_id_to_local_expert_id(self, expert_id: int) -> int:
+        return self.expert_map[expert_id].item()
+
     def weight_loader(self, param: torch.nn.Parameter,
                       loaded_weight: torch.Tensor, weight_name: str,
                       shard_id: str, expert_id: int) -> None:
+
+        expert_id = self._map_global_expert_id_to_local_expert_id(expert_id)
+        if expert_id == -1:
+            return
 
         # compressed-tensors checkpoints with packed weights are stored flipped
         # TODO (mgoin): check self.quant_method.quant_config.quant_format
@@ -447,7 +488,7 @@ class FusedMoE(torch.nn.Module):
         SHARD_ID_TO_SHARDED_DIM = {"w1": 0, "w2": 1, "w3": 0}
 
         expert_data = param.data[expert_id]
-        tp_rank = get_tensor_model_parallel_rank()
+        tp_rank = get_tensor_model_parallel_rank() % self.tp_size
 
         # is_transposed: if the dim to shard the weight
         # should be flipped. Required by GPTQ, compressed-tensors
@@ -538,16 +579,18 @@ class FusedMoE(torch.nn.Module):
             return
 
     @staticmethod
-    def select_experts(hidden_states: torch.Tensor,
-                       router_logits: torch.Tensor,
-                       top_k: int,
-                       use_grouped_topk: bool,
-                       renormalize: bool,
-                       topk_group: Optional[int] = None,
-                       num_expert_group: Optional[int] = None,
-                       custom_routing_function: Optional[Callable] = None,
-                       scoring_func: str = "softmax",
-                       e_score_correction_bias: Optional[torch.Tensor] = None):
+    def select_experts(
+        hidden_states: torch.Tensor,
+        router_logits: torch.Tensor,
+        top_k: int,
+        use_grouped_topk: bool,
+        renormalize: bool,
+        topk_group: Optional[int] = None,
+        num_expert_group: Optional[int] = None,
+        custom_routing_function: Optional[Callable] = None,
+        scoring_func: str = "softmax",
+        e_score_correction_bias: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         from vllm.model_executor.layers.fused_moe.fused_moe import (
             fused_topk, grouped_topk)
 
@@ -579,7 +622,7 @@ class FusedMoE(torch.nn.Module):
         return topk_weights, topk_ids
 
     def forward(self, hidden_states: torch.Tensor,
-                router_logits: torch.Tensor):
+                router_logits: torch.Tensor) -> torch.Tensor:
         assert self.quant_method is not None
 
         # Matrix multiply.
@@ -590,13 +633,16 @@ class FusedMoE(torch.nn.Module):
             top_k=self.top_k,
             renormalize=self.renormalize,
             use_grouped_topk=self.use_grouped_topk,
+            global_num_experts=self.global_num_experts,
+            expert_map=self.expert_map.to(hidden_states.device),
             topk_group=self.topk_group,
             num_expert_group=self.num_expert_group,
             custom_routing_function=self.custom_routing_function,
             scoring_func=self.scoring_func,
             e_score_correction_bias=self.e_score_correction_bias)
 
-        if self.reduce_results and self.tp_size > 1:
+        if self.reduce_results and (self.tp_size > 1 or self.ep_size > 1):
+            # Default set to False. (May have to add shared expert outputs.)
             final_hidden_states = tensor_model_parallel_all_reduce(
                 final_hidden_states)
 

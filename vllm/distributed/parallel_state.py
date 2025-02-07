@@ -901,6 +901,8 @@ get_tensor_model_parallel_group = get_tp_group
 
 _PP: Optional[GroupCoordinator] = None
 
+_EP_SIZE: Optional[int] = None
+
 
 def get_pp_group() -> GroupCoordinator:
     assert _PP is not None, (
@@ -994,6 +996,7 @@ def init_distributed_environment(
 def initialize_model_parallel(
     tensor_model_parallel_size: int = 1,
     pipeline_model_parallel_size: int = 1,
+    expert_model_parallel_size: int = 1,
     backend: Optional[str] = None,
 ) -> None:
     """
@@ -1004,7 +1007,9 @@ def initialize_model_parallel(
             parallelism.
         pipeline_model_parallel_size: number of GPUs used for pipeline model
             parallelism.
-
+        expert_model_parallel_size: number of GPUs used for expert model
+            parallelism.
+        
     Let's say we have a total of 8 GPUs denoted by g0 ... g7 and we
     use 2 GPUs to parallelize the model tensor, and 4 GPUs to parallelize
     the model pipeline. The present function will
@@ -1030,6 +1035,12 @@ def initialize_model_parallel(
             f"world_size ({world_size}) is not equal to "
             f"tensor_model_parallel_size ({tensor_model_parallel_size}) x "
             f"pipeline_model_parallel_size ({pipeline_model_parallel_size})")
+
+    if tensor_model_parallel_size % expert_model_parallel_size != 0:
+        raise RuntimeError(
+            f"tensor_model_parallel_size ({tensor_model_parallel_size}) is not "
+            f"divisible by expert_model_parallel_size "
+            f"({expert_model_parallel_size})")
 
     # Build the tensor model-parallel groups.
     num_tensor_model_parallel_groups: int = (world_size //
@@ -1067,6 +1078,9 @@ def initialize_model_parallel(
                                     use_custom_allreduce=False,
                                     group_name="pp")
 
+    global _EP_SIZE
+    _EP_SIZE = expert_model_parallel_size
+
 
 def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
     """
@@ -1091,6 +1105,7 @@ def ensure_kv_transfer_initialized(vllm_config: "VllmConfig") -> None:
 def ensure_model_parallel_initialized(
     tensor_model_parallel_size: int,
     pipeline_model_parallel_size: int,
+    expert_model_parallel_size: Optional[int] = 1,
     backend: Optional[str] = None,
 ) -> None:
     """Helper to initialize model parallel groups if they are not initialized,
@@ -1101,7 +1116,8 @@ def ensure_model_parallel_initialized(
         get_world_group().device_group)
     if not model_parallel_is_initialized():
         initialize_model_parallel(tensor_model_parallel_size,
-                                  pipeline_model_parallel_size, backend)
+                                  pipeline_model_parallel_size,
+                                  expert_model_parallel_size, backend)
         return
 
     assert (
@@ -1157,6 +1173,11 @@ def get_tensor_model_parallel_world_size():
 def get_tensor_model_parallel_rank():
     """Return my rank for the tensor model parallel group."""
     return get_tp_group().rank_in_group
+
+
+def get_expert_model_parallel_size():
+    """Return the expert model parallel size."""
+    return _EP_SIZE
 
 
 def destroy_model_parallel():
