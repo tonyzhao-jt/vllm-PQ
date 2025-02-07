@@ -1,18 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
 import enum
 from typing import TYPE_CHECKING, List, Optional, Union
 
-from vllm.lora.request import LoRARequest
 from vllm.sampling_params import SamplingParams
 from vllm.sequence import RequestMetrics
 from vllm.v1.engine import EngineCoreRequest, FinishReason
 from vllm.v1.utils import ConstantList
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future
+
+    from vllm.lora.request import LoRARequest
     from vllm.multimodal import MultiModalKwargs
     from vllm.multimodal.inputs import PlaceholderRange
+    from vllm.v1.core.guided_decoding import Grammar
     from vllm.v1.core.kv_cache_utils import BlockHashType
+
+
+class GuidedDecodingOptions(enum.Enum):
+    json = enum.auto()
+    regex = enum.auto()
+    grammar = enum.auto()
+    choice = enum.auto()
+
+
+GuidedDecodingObject = Union[str, Dict[str, Any]]
+GuidedDecodingKey = Tuple[GuidedDecodingOptions, GuidedDecodingObject]
 
 
 class Request:
@@ -29,6 +44,7 @@ class Request:
         eos_token_id: Optional[int],
         arrival_time: float,
         lora_request: Optional[LoRARequest] = None,
+        grammar: Optional[Grammar] = None,
     ) -> None:
         self.request_id = request_id
         self.sampling_params = sampling_params
@@ -73,6 +89,10 @@ class Request:
         # they should also be updated simultaneously.
         self.output_token_ids = ConstantList(self._output_token_ids)
         self.all_token_ids = ConstantList(self._all_token_ids)
+
+        # grammar objects
+        self.grammar: Optional[Union[Grammar, Future[Grammar]]] = grammar
+        self._grammar_bitmask = None
 
     @classmethod
     def from_engine_core_request(cls, request: EngineCoreRequest) -> "Request":
@@ -131,18 +151,48 @@ class Request:
     def append_kv_block_hashes(self, block_hash: "BlockHashType") -> None:
         self._kv_block_hashes.append(block_hash)
 
+    @property
+    def use_guided_decoding(self) -> bool:
+        return self.sampling_params.guided_decoding is not None
+
+    @property
+    def grammar_bitmask(self):
+        return self._grammar_bitmask
+
+    @cached_property
+    def guided_decoding_key(self) -> GuidedDecodingKey:
+        params = self.sampling_params.guided_decoding
+        assert params is not None, "params can't be None."
+        if params.json is not None:
+            return (GuidedDecodingOptions.json, params.json)
+        elif params.regex is not None:
+            return (GuidedDecodingOptions.regex, params.regex)
+        elif params.choice is not None:
+            return (GuidedDecodingOptions.choice, params.choice)
+        elif params.grammar is not None:
+            return (GuidedDecodingOptions.grammar, params.grammar)
+        else:
+            raise ValueError("No valid guided decoding parameter found")
+
+    def allocate_grammar_bitmask(self, vocab_size: int):
+        if self._grammar_bitmask is None:
+            self._grammar_bitmask = self.grammar.allocate_bitmask(
+                1, vocab_size=vocab_size)
+        return self._grammar_bitmask
+
 
 class RequestStatus(enum.IntEnum):
     """Status of a request."""
     WAITING = 0
-    RUNNING = 1
-    PREEMPTED = 2
+    WAITING_FOR_FSM = enum.auto()
+    RUNNING = enum.auto()
+    PREEMPTED = enum.auto()
     # Note: anything after PREEMPTED (2) will be considered
     # as a finished status.
-    FINISHED_STOPPED = 3
-    FINISHED_LENGTH_CAPPED = 4
-    FINISHED_ABORTED = 5
-    FINISHED_IGNORED = 6
+    FINISHED_STOPPED = enum.auto()
+    FINISHED_LENGTH_CAPPED = enum.auto()
+    FINISHED_ABORTED = enum.auto()
+    FINISHED_IGNORED = enum.auto()
 
     @staticmethod
     def is_finished(status: "RequestStatus") -> bool:

@@ -1,16 +1,27 @@
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from typing import (TYPE_CHECKING, Deque, Dict, Iterable, List, Optional, Set,
                     Tuple, Union)
 
-from vllm.config import CacheConfig, LoRAConfig, ModelConfig, SchedulerConfig
+from collections import deque
+from concurrent import futures
+from dataclasses import dataclass
+from re import A
+from typing import (TYPE_CHECKING, Any, Deque, Dict, Iterable, List, Literal,
+                    Optional, Set, Tuple, Union)
+
+from vllm.config import (CacheConfig, DecodingConfig, LoRAConfig, ModelConfig,
+                         ParallelConfig, SchedulerConfig)
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.sampling_params import SamplingParams
+from vllm.transformers_utils.tokenizer_group import init_tokenizer_from_configs
 from vllm.v1.core.encoder_cache_manager import (EncoderCacheManager,
                                                 compute_encoder_budget)
+from vllm.v1.core.guided_decoding import Grammar
 from vllm.v1.core.kv_cache_manager import KVCacheManager
 from vllm.v1.engine import EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.metrics.stats import SchedulerStats
@@ -18,6 +29,8 @@ from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
 
 if TYPE_CHECKING:
+    import torch
+
     from vllm.multimodal import MultiModalKwargs
     from vllm.multimodal.base import PlaceholderRange
 
@@ -31,12 +44,12 @@ class Scheduler:
         scheduler_config: SchedulerConfig,
         model_config: ModelConfig,
         cache_config: CacheConfig,
+        parallel_config: ParallelConfig,
         lora_config: Optional[LoRAConfig],
     ) -> None:
         self.scheduler_config = scheduler_config
         self.cache_config = cache_config
         self.lora_config = lora_config
-
         # Scheduling constraints.
         self.max_num_running_reqs = self.scheduler_config.max_num_seqs
         self.max_num_scheduled_tokens = \
@@ -113,10 +126,19 @@ class Scheduler:
         scheduled_encoder_inputs: Dict[str, List[int]] = {}
         encoder_budget = self.max_num_encoder_input_tokens
 
+        # Create a shared bitmask tensor for the whole batch
+        vocab_size = self.model_config.get_vocab_size()
+
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+
+            # Skip requests waiting for FSM
+            if request.status == RequestStatus.WAITING_FOR_FSM:
+                req_index += 1
+                continue
+
             num_new_tokens = request.num_tokens - request.num_computed_tokens
             num_new_tokens = min(num_new_tokens, token_budget)
             assert num_new_tokens > 0
@@ -343,6 +365,9 @@ class Scheduler:
         request: Request,
         new_block_ids: List[int],
         num_computed_tokens: int,
+        *,
+        grammar: Optional[Grammar] = None,
+        grammar_bitmask: Optional[Any] = None,
         resumed_from_preemption: bool,
     ) -> "CachedRequestData":
         # OPTIMIZATION: Cache the CachedRequestData objects to avoid creating
@@ -352,6 +377,8 @@ class Scheduler:
             req_data.resumed_from_preemption = resumed_from_preemption
             req_data.new_block_ids = new_block_ids
             req_data.num_computed_tokens = num_computed_tokens
+            req_data.grammar = grammar
+            req_data.grammar_bitmask = grammar_bitmask
         else:
             req_data = CachedRequestData.from_request(request,
                                                       resumed_from_preemption,
@@ -435,6 +462,8 @@ class Scheduler:
         scheduler_output: "SchedulerOutput",
         model_runner_output: "ModelRunnerOutput",
     ) -> EngineCoreOutputs:
+        # concern: batchsize >>>1000
+        # compilation << update
         # NOTE(woosuk): This method doesn't consider speculative decoding.
         sampled_token_ids = model_runner_output.sampled_token_ids
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
@@ -526,8 +555,8 @@ class Scheduler:
         return False
 
     def add_request(self, request: Request) -> None:
-        self.waiting.append(request)
         self.requests[request.request_id] = request
+        self.waiting.append(request)
 
     def finish_requests(
         self,
@@ -593,6 +622,9 @@ class NewRequestData:
     mm_positions: List["PlaceholderRange"]
     sampling_params: SamplingParams
     block_ids: List[int]
+
+    grammar: Optional[Grammar]
+    grammar_bitmask: Any
     num_computed_tokens: int
     lora_request: Optional[LoRARequest]
 
@@ -614,12 +646,33 @@ class NewRequestData:
             block_ids=block_ids,
             num_computed_tokens=num_computed_tokens,
             lora_request=request.lora_request,
+            grammar=request.grammar,
+            grammar_bitmask=request.grammar_bitmask)
         )
 
 
 @dataclass
-class CachedRequestData:
+class ResumedRequestData:
 
+    req_id: str
+    block_ids: List[int]
+    num_computed_tokens: int
+
+    @classmethod
+    def from_request(
+        cls,
+        request: Request,
+        block_ids: List[int],
+        num_computed_tokens: int,
+    ) -> "ResumedRequestData":
+        return cls(
+            req_id=request.request_id,
+            block_ids=block_ids,
+            num_computed_tokens=num_computed_tokens,
+        )
+
+
+class CachedRequestData:
     req_id: str
     # If resumed_from_preemption is False, new_block_ids will be appended to
     # the request's block IDs. If True, new_block_ids will be used as the
@@ -627,6 +680,9 @@ class CachedRequestData:
     resumed_from_preemption: bool
     new_block_ids: List[int]
     num_computed_tokens: int
+
+    grammar: Optional[Grammar]
+    grammar_bitmask: Any
 
     @classmethod
     def from_request(
@@ -641,6 +697,8 @@ class CachedRequestData:
             resumed_from_preemption=resumed_from_preemption,
             new_block_ids=new_block_ids,
             num_computed_tokens=num_computed_tokens,
+                   grammar=request.grammar,
+                   grammar_bitmask=request.grammar_bitmask
         )
 
 

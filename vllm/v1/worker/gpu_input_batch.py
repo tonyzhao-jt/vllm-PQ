@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Datastructures defining an input batch
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
@@ -11,6 +12,7 @@ import torch
 from vllm.lora.request import LoRARequest
 from vllm.multimodal import MultiModalKwargs
 from vllm.sampling_params import SamplingParams, SamplingType
+from vllm.v1.core.guided_decoding import Grammar
 from vllm.v1.sample.metadata import SamplingMetadata
 from vllm.v1.worker.block_table import BlockTable
 
@@ -35,6 +37,7 @@ class CachedRequestState:
 
     mrope_positions: Optional[torch.Tensor] = None
     mrope_position_delta: Optional[int] = None
+    grammar: Optional[Grammar] = None
 
     lora_request: Optional[LoRARequest] = None
 
@@ -177,6 +180,7 @@ class InputBatch:
 
         self.num_logprobs: Dict[str, int] = {}
         self.prompt_logprob_reqs: Set[str] = set()
+        self.grammar_reqs: Set[str] = set()
 
     def add_request(
         self,
@@ -244,6 +248,8 @@ class InputBatch:
         if sampling_params.prompt_logprobs:
             self.prompt_logprob_reqs.add(req_id)
 
+        if request.grammar is not None: self.grammar_reqs.add(req_id)
+
         # Add request lora ID
         if request.lora_request:
             lora_id = request.lora_request.lora_int_id
@@ -273,6 +279,7 @@ class InputBatch:
         self.generators.pop(req_index, None)
         self.num_logprobs.pop(req_id, None)
         self.prompt_logprob_reqs.discard(req_id)
+        self.grammar_reqs.discard(req_id)
 
         # LoRA
         lora_id = self.request_lora_mapping[req_index]
@@ -298,6 +305,7 @@ class InputBatch:
         self.generators.clear()
         self.num_logprobs.clear()
         self.prompt_logprob_reqs.clear()
+        self.grammar_reqs.clear()
         self.request_lora_mapping.fill(0)
         self.lora_id_to_lora_request.clear()
         self.lora_id_to_request_ids.clear()
