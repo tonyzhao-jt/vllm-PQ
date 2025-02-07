@@ -6,7 +6,7 @@ from typing import DefaultDict, Dict, Iterable, List, Optional, Tuple
 from vllm.logger import init_logger
 from vllm.utils import cdiv
 from vllm.v1.core.kv_cache_utils import (BlockHashType, FreeKVCacheBlockQueue,
-                                         KVCacheBlock,
+                                         KVCacheBlock, PrefixCachingMetrics,
                                          generate_block_hash_extra_keys,
                                          hash_block_tokens,
                                          hash_request_tokens)
@@ -72,10 +72,27 @@ class KVCacheManager:
         self.req_to_blocks: DefaultDict[str,
                                         List[KVCacheBlock]] = defaultdict(list)
 
+        # Prefix cache metrics. TODO: Make the interval configurable.
+        self.prefix_caching_metrics = PrefixCachingMetrics(interval=1000)
+
     @property
     def usage(self) -> float:
+        """Get the KV cache usage.
+
+        Returns:
+            The KV cache usage (between 0.0 and 1.0).
+        """
         return 1.0 - (self.free_block_queue.num_free_blocks /
                       self.num_gpu_blocks)
+
+    @property
+    def prefix_cache_hit_rate(self) -> float:
+        """Get the prefix caching hit rate.
+
+        Returns:
+            The prefix caching hit rate.
+        """
+        return self.prefix_caching_metrics.hit_rate
 
     def get_computed_blocks(
             self, request: Request) -> Tuple[List[KVCacheBlock], int]:
@@ -111,6 +128,11 @@ class KVCacheManager:
                 computed_blocks.append(cached_block)
             else:
                 break
+
+        self.prefix_caching_metrics.add_request_query(
+            num_queries=len(block_hashes),
+            num_hits=len(computed_blocks),
+        )
 
         # NOTE(woosuk): Since incomplete blocks are not eligible for
         # sharing, `num_computed_tokens` is always a multiple of
@@ -275,6 +297,9 @@ class KVCacheManager:
         # Remove all hashes from all blocks.
         for block in self.block_pool:
             block.reset_hash()
+
+        # Reset the prefix caching metrics.
+        self.prefix_caching_metrics.reset()
 
         logger.info("Successfully reset prefix cache")
         return True

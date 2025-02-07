@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """KV-Cache Utilities."""
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional, Tuple
@@ -26,6 +27,56 @@ class BlockHashType(NamedTuple):
     token_ids: Tuple[int, ...]
     # Extra keys for the block.
     extra_keys: Optional[Any] = None
+
+
+class PrefixCachingMetrics:
+    """Metrics for prefix caching with a hit rate of the most recent N requests.
+
+    Args:
+        interval: The number of the most recent requests to aggregate.
+            Defaults to 1000.
+    """
+
+    def __init__(self, interval: int = 1000):
+        self.interval = interval
+        # The current aggregated query total and hit.
+        self.aggregated_query_total = 0
+        self.aggregated_query_hit = 0
+        # A deque of (num_queries, num_hits) for the most recent requests.
+        self.query_queue: deque[Tuple[int, int]] = deque()
+
+    def add_request_query(self, num_queries: int, num_hits: int):
+        """Add a request to the metrics. This function is called when
+        a new request is being scheduled and is looking for computed blocks.
+        When there are more than `interval` requests, the oldest request
+        is removed from the metrics.
+
+        Args:
+            num_queries: The number of queries in the request.
+            num_hits: The number of hits in the request.
+        """
+
+        self.query_queue.append((num_queries, num_hits))
+        if len(self.query_queue) > self.interval:
+            old_num_queries, old_num_hits = self.query_queue.popleft()
+            self.aggregated_query_total -= old_num_queries
+            self.aggregated_query_hit -= old_num_hits
+
+        self.aggregated_query_total += num_queries
+        self.aggregated_query_hit += num_hits
+
+    def reset(self):
+        """Reset the metrics."""
+        self.aggregated_query_total = 0
+        self.aggregated_query_hit = 0
+        self.query_queue.clear()
+
+    @property
+    def hit_rate(self) -> float:
+        """Calculate the hit rate for the past N requests."""
+        if self.aggregated_query_total == 0:
+            return 0.0
+        return self.aggregated_query_hit / self.aggregated_query_total
 
 
 @dataclass
