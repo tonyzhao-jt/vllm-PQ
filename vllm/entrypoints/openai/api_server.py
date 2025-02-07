@@ -37,6 +37,7 @@ from vllm.engine.multiprocessing.engine import run_mp_engine
 from vllm.engine.protocol import EngineClient
 from vllm.entrypoints.chat_utils import load_chat_template
 from vllm.entrypoints.launcher import serve_http
+from vllm.entrypoints.openai.orca_metrics import metrics_header
 from vllm.entrypoints.logger import RequestLogger
 from vllm.entrypoints.openai.cli_args import (make_arg_parser,
                                               validate_parsed_serve_args)
@@ -389,14 +390,14 @@ async def create_chat_completion(request: ChatCompletionRequest,
         return base(raw_request).create_error_response(
             message="The model does not support Chat Completions API")
 
-    generator = await handler.create_chat_completion(request, raw_request)
+    generator, in_band_metrics = await handler.create_chat_completion(request, raw_request)
 
     if isinstance(generator, ErrorResponse):
         return JSONResponse(content=generator.model_dump(),
                             status_code=generator.code)
 
     elif isinstance(generator, ChatCompletionResponse):
-        return JSONResponse(content=generator.model_dump())
+        return JSONResponse(content=generator.model_dump(), headers=metrics_header(in_band_metrics))
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
@@ -409,12 +410,15 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         return base(raw_request).create_error_response(
             message="The model does not support Completions API")
 
-    generator = await handler.create_completion(request, raw_request)
+    inband_metrics = None
+    generator, inband_metrics = await handler.create_completion(request, raw_request)
+    # logger.info(f"Generator lenght: {len(generator)}, generator")
     if isinstance(generator, ErrorResponse):
         return JSONResponse(content=generator.model_dump(),
                             status_code=generator.code)
     elif isinstance(generator, CompletionResponse):
-        return JSONResponse(content=generator.model_dump())
+        header = metrics_header(inband_metrics)
+        return JSONResponse(content=generator.model_dump(), headers=header)
 
     return StreamingResponse(content=generator, media_type="text/event-stream")
 
@@ -777,6 +781,7 @@ async def init_app_state(
         enable_reasoning=args.enable_reasoning,
         reasoning_parser=args.reasoning_parser,
         enable_prompt_tokens_details=args.enable_prompt_tokens_details,
+        in_band_metrics = args.enable_inband_metrics,
     ) if model_config.runner_type == "generate" else None
     state.openai_serving_completion = OpenAIServingCompletion(
         engine_client,
@@ -784,6 +789,7 @@ async def init_app_state(
         state.openai_serving_models,
         request_logger=request_logger,
         return_tokens_as_token_ids=args.return_tokens_as_token_ids,
+        in_band_metrics = args.enable_inband_metrics,
     ) if model_config.runner_type == "generate" else None
     state.openai_serving_pooling = OpenAIServingPooling(
         engine_client,

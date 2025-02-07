@@ -19,7 +19,7 @@ from vllm.entrypoints.openai.protocol import (CompletionLogProbs,
                                               CompletionResponseChoice,
                                               CompletionResponseStreamChoice,
                                               CompletionStreamResponse,
-                                              ErrorResponse,
+                                              ErrorResponse, InBandMetrics,
                                               RequestResponseMetadata,
                                               UsageInfo)
 # yapf: enable
@@ -45,12 +45,14 @@ class OpenAIServingCompletion(OpenAIServing):
         *,
         request_logger: Optional[RequestLogger],
         return_tokens_as_token_ids: bool = False,
+        in_band_metrics: Optional[str] = None,
     ):
         super().__init__(engine_client=engine_client,
                          model_config=model_config,
                          models=models,
                          request_logger=request_logger,
-                         return_tokens_as_token_ids=return_tokens_as_token_ids)
+                         return_tokens_as_token_ids=return_tokens_as_token_ids,
+                         in_band_metrics=in_band_metrics)
         diff_sampling_param = self.model_config.get_diff_sampling_param()
         if diff_sampling_param:
             logger.info(
@@ -61,7 +63,7 @@ class OpenAIServingCompletion(OpenAIServing):
         self,
         request: CompletionRequest,
         raw_request: Optional[Request] = None,
-    ) -> Union[AsyncGenerator[str, None], CompletionResponse, ErrorResponse]:
+    ) -> Tuple[Union[AsyncGenerator[str, None], CompletionResponse, ErrorResponse],Optional[InBandMetrics]]:
         """Completion API similar to OpenAI's API.
 
         See https://platform.openai.com/docs/api-reference/completions/create
@@ -206,7 +208,7 @@ class OpenAIServingCompletion(OpenAIServing):
             final_res_batch_checked = cast(List[RequestOutput],
                                            final_res_batch)
 
-            response = self.request_output_to_completion_response(
+            response, in_band_metrics = self.request_output_to_completion_response(
                 final_res_batch_checked,
                 request,
                 request_id,
@@ -232,7 +234,7 @@ class OpenAIServingCompletion(OpenAIServing):
 
             return fake_stream_generator()
 
-        return response
+        return response, in_band_metrics
 
     async def completion_stream_generator(
         self,
@@ -388,11 +390,13 @@ class OpenAIServingCompletion(OpenAIServing):
         model_name: str,
         tokenizer: AnyTokenizer,
         request_metadata: RequestResponseMetadata,
-    ) -> CompletionResponse:
+    ) -> Tuple[CompletionResponse,Optional[InBandMetrics]]:
         choices: List[CompletionResponseChoice] = []
         num_prompt_tokens = 0
         num_generated_tokens = 0
+        
 
+        latest_in_band_metric : Tuple[int, InBandMetrics] = (0, InBandMetrics(format=self.in_band_metrics))
         for final_res in final_res_batch:
             prompt_token_ids = final_res.prompt_token_ids
             assert prompt_token_ids is not None
@@ -404,7 +408,14 @@ class OpenAIServingCompletion(OpenAIServing):
                             if logprob_values.logprob == float('-inf'):
                                 logprob_values.logprob = -9999.0
             prompt_text = final_res.prompt
-
+            if final_res.metrics.cpu_kv_cache_utilization is not None or final_res.metrics.gpu_kv_cache_utilization is not None:
+                in_band_metric_timestamp, in_band_metric = final_res.metrics.last_token_time, InBandMetrics(
+                    cpu_kv_cache_utilisation=final_res.metrics.cpu_kv_cache_utilization, 
+                    gpu_kv_cache_utilisation=final_res.metrics.gpu_kv_cache_utilization,
+                    format = self.in_band_metrics)
+                if not latest_in_band_metric[1] or latest_in_band_metric[0]<in_band_metric_timestamp:
+                    latest_in_band_metric = (in_band_metric_timestamp, in_band_metric)    
+                
             token_ids: GenericSequence[int]
             out_logprobs: Optional[GenericSequence[Optional[Dict[int,
                                                                  Logprob]]]]
@@ -475,7 +486,8 @@ class OpenAIServingCompletion(OpenAIServing):
             model=model_name,
             choices=choices,
             usage=usage,
-        )
+            # in_band_metrics=latest_in_band_metric[1] or InBandMetrics(),
+        ), latest_in_band_metric[1] or None
 
     def _create_completion_logprobs(
         self,
