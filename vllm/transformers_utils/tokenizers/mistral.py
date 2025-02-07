@@ -291,6 +291,12 @@ class MistralTokenizer:
 
         from mistral_common.protocol.instruct.request import (
             ChatCompletionRequest)
+        for message in messages:
+            if message.get("role") == "assistant":
+                content = message.get("content")
+                if isinstance(content, list):
+                    content = "".join([chunk.get("text") for chunk in content])
+                    message["content"] = content
         request = ChatCompletionRequest(messages=messages,
                                         tools=tools)  # type: ignore[type-var]
         encoded = self.mistral.encode_chat_completion(request)
