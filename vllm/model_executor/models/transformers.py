@@ -15,21 +15,23 @@
 # limitations under the License.
 """Wrapper around `transformers` models"""
 import re
+from itertools import chain
 from typing import Iterable, Literal, Optional, Union
 
 import torch
 from torch import nn
-from transformers import AutoModel, PreTrainedModel
+from transformers import AutoModel, PretrainedConfig, PreTrainedModel
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 from vllm.attention import Attention, AttentionMetadata
-from vllm.config import VllmConfig
-from vllm.distributed import get_tensor_model_parallel_world_size
-from vllm.distributed.utils import divide
+from vllm.config import CacheConfig, VllmConfig
+from vllm.distributed import get_pp_group, get_tensor_model_parallel_world_size
+from vllm.distributed.utils import divide, get_pp_indices
 from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.logits_processor import LogitsProcessor
+from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.sampler import SamplerOutput, get_sampler
 from vllm.model_executor.layers.vocab_parallel_embedding import (
     ParallelLMHead, VocabParallelEmbedding)
@@ -37,7 +39,9 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
-from .utils import maybe_prefix
+from .interfaces import SupportsPP
+from .utils import (PPMissingLayer, is_pp_missing_parameter,
+                    make_empty_intermediate_tensors_factory, maybe_prefix)
 
 logger = init_logger(__name__)
 
@@ -53,7 +57,7 @@ def vllm_flash_attention_forward(
         scaling: float = None,
         # vLLM kwargs
         attn_metadata: AttentionMetadata = None,
-        attention_instances: list[Attention] = None,
+        attention_instances: dict[Attention] = None,
         **kwargs):
     self_attn = attention_instances[module.layer_idx]
     if scaling is not None:
@@ -122,7 +126,38 @@ def replace_linear_class(
     )
 
 
-class TransformersModel(nn.Module):
+class HFCompatiblePPMissingLayer(PPMissingLayer):
+    """
+    A version of `PPMissingLayer` that can replace Transformers
+    transformer layers.
+    """
+
+    def forward(self, *args, **kwargs):
+        input = args[0] if args else kwargs.get("input")
+        return (super().forward(input), )
+
+
+def get_layers(module: nn.Module) -> nn.ModuleList:
+    # TODO transformers will have a util to get it
+    for child in module.children():
+        if isinstance(child, nn.ModuleList):
+            return child
+    raise ValueError(f"Could not find a ModuleList in {module}")
+
+
+def get_final_norm_name(module: nn.Module) -> nn.Module:
+    # TODO transformers will have a util to get it
+    for name, child in reversed(list(module.named_children())):
+        if "norm" in child.__class__.__name__.lower():
+            return name
+        if "norm" in name.lower():
+            return name
+        if isinstance(child, nn.ModuleList):
+            break
+    raise ValueError(f"Could not find a norm layer in {module}")
+
+
+class TransformersModel(nn.Module, SupportsPP):
     embedding_padding_modules = ["lm_head"]
     embedding_modules = ["embed_tokens"
                          ]  # TODO transformers will have a util to get it
@@ -133,26 +168,102 @@ class TransformersModel(nn.Module):
 
         config = vllm_config.model_config.hf_config
         cache_config = vllm_config.cache_config
+        device_config = vllm_config.device_config
         quant_config = vllm_config.quant_config
 
         self.config = config
+        self.device_config = device_config
         self.quant_config = quant_config
-        self.vocab_size = config.vocab_size
-        self.unpadded_vocab_size = config.vocab_size
 
-        self.model: PreTrainedModel = AutoModel.from_config(
-            self.config,
-            attn_implementation="vllm",
-            trust_remote_code=vllm_config.model_config.trust_remote_code,
-        )
+        # Use meta device to delay allocating GPU tensors
+        with torch.device("meta"):
+            self.model: PreTrainedModel = AutoModel.from_config(
+                self.config,
+                attn_implementation="vllm",
+                trust_remote_code=vllm_config.model_config.trust_remote_code,
+            )
         prefix = self.model.base_model_prefix
 
-        # MLP modifications
+        # Input embeddings
+        if get_pp_group().is_first_rank or (config.tie_word_embeddings
+                                            and get_pp_group().is_last_rank):
+            new_module = VocabParallelEmbedding(
+                config.vocab_size,
+                config.hidden_size,
+                org_num_embeddings=config.vocab_size,
+                quant_config=None,
+            )
+            self.model.set_input_embeddings(new_module)
+        else:
+            self.model.set_input_embeddings(PPMissingLayer())
+
+        # Pipeline parallelise the transformer layers
+        start_layer, end_layer = get_pp_indices(config.num_hidden_layers,
+                                                get_pp_group().rank_in_group,
+                                                get_pp_group().world_size)
+        layers = get_layers(self.model)
+        for i in range(len(layers)):
+            if start_layer <= i and i < end_layer:
+                continue
+            layers[i] = HFCompatiblePPMissingLayer()
+
+        final_norm_name = get_final_norm_name(self.model)
+        if not get_pp_group().is_last_rank:
+            setattr(self.model, final_norm_name, PPMissingLayer())
+
+        # Transformer layers (this must happen after pipeline parallelisation)
+        self.attention_instances = self.create_attention_instances(
+            config, cache_config, quant_config=None)
         self.apply_base_model_tp_plan(self.model)
 
-        # Attention modifications (assumes 1 attention op per hidden layer)
+        # Output embeddings
+        if get_pp_group().is_last_rank:
+            self.unpadded_vocab_size = config.vocab_size
+            self.lm_head = ParallelLMHead(
+                config.vocab_size,
+                config.hidden_size,
+                quant_config=None,
+                prefix=maybe_prefix(prefix, "lm_head"),
+            )
+            if config.tie_word_embeddings:
+                self.lm_head = self.lm_head.tie_weights(
+                    self.model.get_input_embeddings())
+
+            logit_scale = getattr(config, "logit_scale", 1.0)
+            self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
+                                                    config.vocab_size,
+                                                    logit_scale)
+        else:
+            self.lm_head = PPMissingLayer()
+
+        # Initialize buffers
+        self.init_buffers(self.model)
+
+        # Move remaining meta tensors to device
+        self.meta_to_empty(self.model)
+
+        self.sampler = get_sampler()
+
+        self.make_empty_intermediate_tensors = (
+            make_empty_intermediate_tensors_factory(["hidden_states"],
+                                                    config.hidden_size))
+
+    def create_attention_instances(
+        self,
+        config: PretrainedConfig,
+        cache_config: CacheConfig = None,
+        quant_config: QuantizationConfig = None,
+    ) -> dict[int, Attention]:
+        """
+        Create `Attention` instances to inform KV cache allocation.
+        """
         tp_size = get_tensor_model_parallel_world_size()
-        self.attention_instances = [
+        pp_size = get_pp_group().world_size
+        pp_rank = get_pp_group().rank_in_group
+        layers_per_rank = divide(config.num_hidden_layers, pp_size)
+        offset = layers_per_rank * pp_rank
+        return {
+            i + offset:
             Attention(
                 num_heads=divide(config.num_attention_heads, tp_size),
                 head_size=config.head_dim,
@@ -161,25 +272,10 @@ class TransformersModel(nn.Module):
                 scale=config.head_dim**-0.5,
                 num_kv_heads=divide(config.num_key_value_heads, tp_size),
                 cache_config=cache_config,
-                quant_config=None,
-                prefix=f"{i}.attn") for i in range(config.num_hidden_layers)
-        ]
-
-        # Model modifications
-        self.replace_vocab_embed_class(self.model)
-
-        # ForCausalLM modifications
-        self.lm_head = ParallelLMHead(config.vocab_size,
-                                      config.hidden_size,
-                                      quant_config=None,
-                                      prefix=maybe_prefix(prefix, "lm_head"))
-        if config.tie_word_embeddings:
-            self.lm_head.weight = self.model.get_input_embeddings().weight
-
-        logit_scale = getattr(config, "logit_scale", 1.0)
-        self.logits_processor = LogitsProcessor(self.unpadded_vocab_size,
-                                                config.vocab_size, logit_scale)
-        self.sampler = get_sampler()
+                quant_config=quant_config,
+                prefix=f"{i + offset}.attn")
+            for i in range(layers_per_rank)
+        }
 
     def apply_base_model_tp_plan(self, module: nn.Module, prefix: str = ""):
         """
@@ -204,36 +300,55 @@ class TransformersModel(nn.Module):
             else:
                 self.apply_base_model_tp_plan(child_module, prefix=qual_name)
 
-    def replace_vocab_embed_class(self, module: nn.Module):
-        # Use native set input embeddings
-        new_module = VocabParallelEmbedding(
-            self.vocab_size,
-            self.config.hidden_size,
-            org_num_embeddings=self.config.vocab_size,
-            quant_config=None,
-        )
-        log_replacement("input embedding", self.model.get_input_embeddings(),
-                        new_module)
-        self.model.set_input_embeddings(new_module)
+    def init_buffers(self, module: nn.Module):
+        for name, buffer in module.named_buffers(recurse=False):
+            if buffer.device == torch.device("meta"):
+                new_buffer = getattr(type(module)(self.config), name)
+                setattr(module, name, new_buffer)
+        for child in module.children():
+            self.init_buffers(child)
+
+    def meta_to_empty(self, module: nn.Module):
+        tensors = list(chain(module.buffers(), module.parameters()))
+        if tensors and all(t.device == torch.device("meta") for t in tensors):
+            module.to_empty(device=self.device_config.device)
+            return  # We can stop recursing because to_empty is recursive
+        for child in module.children():
+            self.meta_to_empty(child)
 
     def forward(
         self,
-        input_ids: torch.Tensor,
+        input_ids: Optional[torch.Tensor],
         positions: torch.Tensor,
         kv_caches: list[torch.Tensor],  # argument not used
         attn_metadata: AttentionMetadata,
         intermediate_tensors: Optional[IntermediateTensors] = None,
         inputs_embeds: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        model_output = self.model(
-            input_ids[None, ...],
+        if get_pp_group().is_first_rank:
+            if input_ids is not None:
+                input_ids = input_ids[None, ...]
+            if inputs_embeds is not None:
+                inputs_embeds = inputs_embeds[None, ...]
+        else:
+            assert intermediate_tensors is not None
+            input_ids = None
+            inputs_embeds = intermediate_tensors["hidden_states"][None, ...]
+
+        hidden_states = self.model(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
             use_cache=False,
             position_ids=positions[None, ...],
             attn_metadata=attn_metadata,
             intermediate_tensors=intermediate_tensors,
             attention_instances=self.attention_instances,
             return_dict=False)[0][0, ...]  # we remove batch dimension for now
-        return model_output
+
+        if not get_pp_group().is_last_rank:
+            return IntermediateTensors({"hidden_states": hidden_states})
+
+        return hidden_states
 
     def compute_logits(
         self,
@@ -255,8 +370,8 @@ class TransformersModel(nn.Module):
         params_dict = dict(self.named_parameters())
         loaded_params = set[str]()
         for name, loaded_weight in weights:
-            if name not in params_dict:
-                name = f"{self.model.base_model_prefix}.{name}"
+            if is_pp_missing_parameter(name, self):
+                continue
             if name in params_dict:
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader",
