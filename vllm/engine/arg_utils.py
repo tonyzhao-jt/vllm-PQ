@@ -40,6 +40,7 @@ DEVICE_OPTIONS = [
     "tpu",
     "xpu",
     "hpu",
+    "metal",
 ]
 
 
