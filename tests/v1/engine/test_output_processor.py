@@ -10,6 +10,7 @@ from vllm.sampling_params import RequestOutputKind, SamplingParams
 from vllm.transformers_utils.tokenizer_group import init_tokenizer_from_configs
 from vllm.v1.engine import EngineCoreOutput, EngineCoreRequest
 from vllm.v1.engine.output_processor import OutputProcessor
+from vllm.v1.metrics.stats import IterationStats
 
 TOKENIZER_NAME = "mistralai/Mistral-7B-Instruct-v0.3"
 VLLM_CONFIG = EngineArgs(model=TOKENIZER_NAME).create_engine_config()
@@ -261,8 +262,8 @@ def test_iteration_stats():
 
     # First iteration has 2 prefills.
     outputs = engine_core.get_outputs()[:num_active]
-    processed_outputs = output_processor.process_outputs(outputs)
-    iteration_stats = processed_outputs.iteration_stats
+    iteration_stats = IterationStats(output_processor.log_stats)
+    output_processor.process_outputs(outputs, iteration_stats)
     total_prompt_tokens = sum(
         [len(prompt_tokens) for prompt_tokens in PROMPT_TOKENS[:num_active]])
 
@@ -271,8 +272,8 @@ def test_iteration_stats():
 
     # Just decodes in this step.
     outputs = engine_core.get_outputs()[:num_active]
-    processed_outputs = output_processor.process_outputs(outputs)
-    iteration_stats = processed_outputs.iteration_stats
+    iteration_stats = IterationStats(output_processor.log_stats)
+    output_processor.process_outputs(outputs, iteration_stats)
 
     assert iteration_stats.num_prompt_tokens == 0
     assert iteration_stats.num_generation_tokens == num_active
@@ -281,8 +282,8 @@ def test_iteration_stats():
     output_processor.add_request(inactive_request)
     num_active += 1
     outputs = engine_core.get_outputs()[:num_active]
-    processed_outputs = output_processor.process_outputs(outputs)
-    iteration_stats = processed_outputs.iteration_stats
+    iteration_stats = IterationStats(output_processor.log_stats)
+    output_processor.process_outputs(outputs, iteration_stats)
     total_prompt_tokens = len(PROMPT_TOKENS[num_active - 1])
 
     assert iteration_stats.num_prompt_tokens == total_prompt_tokens
@@ -290,8 +291,8 @@ def test_iteration_stats():
 
     # Just decodes in this step.
     outputs = engine_core.get_outputs()[:num_active]
-    processed_outputs = output_processor.process_outputs(outputs)
-    iteration_stats = processed_outputs.iteration_stats
+    iteration_stats = IterationStats(output_processor.log_stats)
+    output_processor.process_outputs(outputs, iteration_stats)
 
     assert iteration_stats.num_prompt_tokens == 0
     assert iteration_stats.num_generation_tokens == num_active
