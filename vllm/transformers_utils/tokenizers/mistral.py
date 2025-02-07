@@ -299,7 +299,7 @@ class MistralTokenizer:
             if message.get("role") == "assistant":
                 content = message.get("content")
                 if isinstance(content, list):
-                    content = "".join([chunk.get("text") for chunk in content])
+                    content = "\n".join([chunk.get("text") for chunk in content])
                     message["content"] = content
         request = ChatCompletionRequest(messages=messages,
                                         tools=tools)  # type: ignore[type-var]
