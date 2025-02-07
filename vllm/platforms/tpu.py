@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
 
@@ -49,6 +49,19 @@ class TpuPlatform(Platform):
     @classmethod
     def is_async_output_supported(cls, enforce_eager: Optional[bool]) -> bool:
         return True
+
+    @classmethod
+    def is_pin_memory_available(cls):
+        logger.warning("Pin memory is not supported on TPU.")
+        return False
+
+    @classmethod
+    def get_punica_wrapper(cls) -> str:
+        return "vllm.lora.punica_wrapper.punica_tpu.PunicaWrapperTPU"
+
+    @classmethod
+    def get_infinity_values(cls, dtype: torch.dtype) -> Tuple[float, float]:
+        return torch.finfo(dtype).min, torch.finfo(dtype).max
 
     @classmethod
     def inference_mode(cls):

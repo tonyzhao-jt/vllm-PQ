@@ -1078,15 +1078,20 @@ class LogitsProcessorWithLoRA(BaseLayerWithLoRA):
         torch.matmul(self.embeddings_tensors,
                      hidden_states.T,
                      out=lora_logits[:-1])
-        lora_logits[-1] = float("-inf")
+
+        neg_inf, pos_inf = current_platform.get_infinity_values(
+            lora_logits.dtype)
+
+        lora_logits[-1] = neg_inf
         lora_logits = lora_logits.mT
         indices_padded = self.punica_wrapper.sampler_indices_padded
+
         lora_logits = (lora_logits.reshape(
             lora_logits.shape[0] * lora_logits.shape[1],
             lora_logits.shape[2],
-        ).index_select(0, indices_padded).nan_to_num_(nan=float("-inf"),
-                                                      posinf=float("inf"),
-                                                      neginf=float("-inf")))
+        ).index_select(0, indices_padded).nan_to_num_(nan=neg_inf,
+                                                      posinf=pos_inf,
+                                                      neginf=neg_inf))
 
         # HPU needs special handling to prune out dummy samples.
         if current_platform.is_hpu():
