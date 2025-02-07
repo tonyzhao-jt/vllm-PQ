@@ -15,14 +15,16 @@ from msgspec import msgpack
 
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
+from vllm.lora.request import LoRARequest
 from vllm.transformers_utils.config import (
     maybe_register_config_serialize_by_value)
 from vllm.utils import get_exception_traceback, zmq_socket_ctx
 from vllm.v1.core.kv_cache_utils import get_kv_cache_config
 from vllm.v1.core.scheduler import Scheduler
-from vllm.v1.engine import (EngineCoreOutputs, EngineCoreProfile,
-                            EngineCoreRequest, EngineCoreRequestType,
-                            EngineCoreRequestUnion, EngineCoreResetPrefixCache)
+from vllm.v1.engine import (EngineCoreAddLora, EngineCoreOutputs,
+                            EngineCoreProfile, EngineCoreRequest,
+                            EngineCoreRequestType, EngineCoreRequestUnion,
+                            EngineCoreResetPrefixCache)
 from vllm.v1.engine.mm_input_mapper import MMInputMapperServer
 from vllm.v1.executor.abstract import Executor
 from vllm.v1.request import Request, RequestStatus
@@ -140,6 +142,9 @@ class EngineCore:
     def reset_prefix_cache(self):
         self.scheduler.reset_prefix_cache()
 
+    def add_lora(self, lora_request: LoRARequest) -> None:
+        self.model_executor.add_lora(lora_request)
+
 
 class EngineCoreProc(EngineCore):
     """ZMQ-wrapper for running EngineCore in background process."""
@@ -251,9 +256,11 @@ class EngineCoreProc(EngineCore):
         if isinstance(request, EngineCoreRequest):
             self.add_request(request)
         elif isinstance(request, EngineCoreProfile):
-            self.model_executor.profile(request.is_start)
+            self.profile(request.is_start)
         elif isinstance(request, EngineCoreResetPrefixCache):
             self.reset_prefix_cache()
+        elif isinstance(request, EngineCoreAddLora):
+            self.add_lora(request.lora_request)
         else:
             # TODO: make an EngineCoreAbort wrapper
             assert isinstance(request, list)
@@ -280,7 +287,9 @@ class EngineCoreProc(EngineCore):
                     request = decoder_abort_req.decode(request_data)
                 elif request_type in (
                         EngineCoreRequestType.PROFILE.value,
-                        EngineCoreRequestType.RESET_PREFIX_CACHE.value):
+                        EngineCoreRequestType.RESET_PREFIX_CACHE.value,
+                        EngineCoreRequestType.ADD_LORA.value,
+                ):
                     request = pickle.loads(request_data)
                 else:
                     raise ValueError(f"Unknown RequestType: {request_type}")
