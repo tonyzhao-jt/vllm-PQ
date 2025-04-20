@@ -41,8 +41,18 @@ def layer_to_config(
             "dynamic": {},
             "full_config": {},
         },
-        # with CompressedTensorsConfig W8A8
         "8": {
+            "weight_bits": 8,
+            "group_size": 128,
+            # for n GPTQ24
+            "desc_act": True,
+            "is_sym": True,
+            "lm_head_quantized": False,
+            "dynamic": {},
+            "full_config": {},
+        },
+        # with CompressedTensorsConfig W8A8
+        "8-tc": {
             "ignore": ["lm_head"],
             "sparsity_scheme_map": {},
             "sparsity_ignore_list": [],
