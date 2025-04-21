@@ -88,16 +88,17 @@ def layer_to_config(
         },
     }
     q_cls = None
-    bit = 16
+    bit = "16"
     if "bits" in dynamic_value:
         bit = dynamic_value["bits"]
+    bit = str(bit)
     
     from vllm.platforms import current_platform
     capability_tuple = current_platform.get_device_capability()
     cap = capability_tuple.to_int()
     scheme = bit_scheme[str(bit)]
     gptq_cls = GPTQConfig
-    if bit in [4, 8]:
+    if bit in ["4", "8"]:
         if cap >= 80:
             gptq_cls = GPTQMarlinConfig
         else:
@@ -105,13 +106,13 @@ def layer_to_config(
             scheme.pop('full_config')
             # scheme['desc_act'] = False
     
-    if bit == 16:
+    if bit == "16":
         return None
     elif bit == '8-tc':
         q_cls = CompressedTensorsConfig(**scheme)
-    elif bit== 8:
+    elif bit == "8":
         q_cls = gptq_cls(**scheme)
-    elif bit == 4:
+    elif bit == "4":
         q_cls = gptq_cls(**scheme)
     else:
         raise ValueError(f"Unsupported bitwidth {bit}")
