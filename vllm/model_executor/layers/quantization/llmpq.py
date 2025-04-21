@@ -96,7 +96,7 @@ def layer_to_config(
     from vllm.platforms import current_platform
     capability_tuple = current_platform.get_device_capability()
     cap = capability_tuple.to_int()
-    scheme = bit_scheme[str(bit)]
+    scheme = bit_scheme[bit] if bit in bit_scheme else None
     gptq_cls = GPTQConfig
     if bit in ["4", "8"]:
         if cap >= 80:
