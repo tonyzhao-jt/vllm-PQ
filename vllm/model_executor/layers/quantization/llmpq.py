@@ -91,18 +91,33 @@ def layer_to_config(
     bit = 16
     if "bits" in dynamic_value:
         bit = dynamic_value["bits"]
-
+    
+    from vllm.platforms import current_platform
+    capability_tuple = current_platform.get_device_capability()
+    cap = capability_tuple.to_int()
+    scheme = bit_scheme[str(bit)]
+    gptq_cls = GPTQConfig
+    if bit in [4, 8]:
+        if cap >= 80:
+            gptq_cls = GPTQMarlinConfig
+        else:
+            scheme.pop('is_sym')
+            scheme.pop('full_config')
+            # scheme['desc_act'] = False
+    
     if bit == 16:
         return None
-    elif bit == 8:
-        q_cls = CompressedTensorsConfig(**bit_scheme["8"])
+    elif bit == '8-tc':
+        q_cls = CompressedTensorsConfig(**scheme)
+    elif bit== 8:
+        q_cls = gptq_cls(**scheme)
     elif bit == 4:
-        q_cls = GPTQMarlinConfig(**bit_scheme["4"])
+        q_cls = gptq_cls(**scheme)
     else:
         raise ValueError(f"Unsupported bitwidth {bit}")
 
     return q_cls
-    return
+
 
 class LLMPQQuantConfig(QuantizationConfig):
     def __init__(
@@ -135,11 +150,13 @@ class LLMPQQuantConfig(QuantizationConfig):
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "GPTQConfig":
         dynamic = cls.get_from_keys_or(config, ["dynamic"], default={})
+        embed_lmhead_bit = cls.get_from_keys_or(config, ["prepost"], default={})
         return cls(dynamic)
 
     # from compressed-tensors
     def get_cache_scale(self, name: str) -> Optional[str]:
         q_cls = self.layer_to_qconfig(name)
+        logger.info(f"name {name}: {q_cls}")
         return q_cls.get_cache_scale(name) if q_cls else None
 
     def layer_to_qconfig(self, layer_name: str):
@@ -167,15 +184,13 @@ class LLMPQQuantConfig(QuantizationConfig):
         prefix: str,
     ) -> Optional["QuantizeMethodBase"]:
         assert self.dynamic, "PQ requires dynamic to be set"
-        if (
-            get_dynamic_override(self, layer_name=prefix)  # noqa: E712
-            == False  # noqa: E712
-        ):  # noqa: E712
-            return UnquantizedLinearMethod()
+        logger.info(f"{prefix}")
+        if prefix and "embed" in prefix:
+            return UnquantizedEmbeddingMethod()
 
         if prefix:
             if "lm_head" in prefix:
-                return UnquantizedEmbeddingMethod()
+                return UnquantizedLinearMethod()
             q_cls = self.layer_to_qconfig(prefix)
             if q_cls:
                 return q_cls.get_quant_method(layer, prefix)
